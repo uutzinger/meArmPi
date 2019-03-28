@@ -4,7 +4,7 @@
 #  DemoIK.py - York Hack Space May 2014
 #  Simple demo of meArm library to walk through some points defined in Cartesian coordinates
 
-import meArm2
+import meArm
 
 
 arm = meArm2.meArm()
