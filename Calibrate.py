@@ -8,14 +8,15 @@ mh = Adafruit_MotorHAT(addr=0x60)
 
 # Helper function to make setting a servo pulse width simpler.
 # Pulse is in microseconds
+# Pulse is in microseconds
 def set_servo_pulse(channel, pulse):
-    pulse_length = 1000000.0    # 1,000,000 us per second
-    pulse_length //= 50.0       # 50 Hz PWM for MG90 servo motors
-    pulse_length //= 4096.0     # 12 bits of resolution
-    pulse //= pulse_length
-    print(pulse)
-    mh._pwm.setPWM(channel, 0, int(pulse))
-
+    pulse_length = (1000000. / 50. ) / 4096.    # 1,000,000 us per second
+                                                # 50 Hz PWM for MG90 servo motors
+                                                # 12 bits of resolution
+    pulse_width = int(float(pulse) / pulse_length)
+    mh._pwm.setPWM(channel, 0, pulse_width)
+    print(pulse_width)
+    
 # Set frequency to 50hz, which is spec for MG90. 
 # You can not use Servo Motor and Stepper Motor on the same hat simultaneously 
 # as the stepper motor requires a different frequency.
@@ -25,4 +26,5 @@ mh._pwm.setPWMFreq(50)
 # Do not use any other channels.
 # Move servo on channel O between extrems.
 # MG90S is 500 to 2000 microseconds
+print('Moving servo on channel 0, press Ctrl-C to quit...')
 set_servo_pulse(0,1500)
