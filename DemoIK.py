@@ -7,7 +7,7 @@
 import meArm
 
 
-arm = meArm2.meArm()
+arm = meArm.meArm()
 arm.begin(0,0x60) # block address of motor controller
 
 arm.openGripper()
