@@ -19,10 +19,10 @@ import numpy
 class meArm():
     value = 0
     def __init__(self,
-            sweepMinBase     = 111, sweepMaxBase     = 492, angleMinBase     =  1.4, angleMaxBase     = -1.52,
-            sweepMinShoulder = 143, sweepMaxShoulder = 379, angleMinShoulder =  1.8,  angleMaxShoulder =  0.05,
-            sweepMinElbow    = 410, sweepMaxElbow    = 205, angleMinElbow    =  0.44, angleMaxElbow    = -1.05,
-            sweepMinGripper  = 482, sweepMaxGripper  = 205, angleMinGripper  =  -0.79, angleMaxGripper  =  0.79):
+            sweepMinBase     = 101, sweepMaxBase     = 506, angleMinBase     =   1.50, angleMaxBase     = -1.57,
+            sweepMinShoulder = 110, sweepMaxShoulder = 354, angleMinShoulder =   1.85, angleMaxShoulder =  0.0,
+            sweepMinElbow    = 396, sweepMaxElbow    = 228, angleMinElbow    =   0.40, angleMaxElbow    = -0.87,
+            sweepMinGripper  = 454, sweepMaxGripper  = 120, angleMinGripper  =   0.00, angleMaxGripper  =  2.53):
         """Constructor for meArm - can use as default arm=meArm(), or supply calibration data for servos."""
         self.servoInfo = {}
         self.servoInfo["base"]     = self.setupServo(sweepMinBase, sweepMaxBase, angleMinBase, angleMaxBase)
@@ -33,7 +33,7 @@ class meArm():
     ## Adafruit servo driver has four 'blocks' of four servo connectors, 0, 1, 2 or 3.
     def begin(self, block = 0, address = 0x6f):
         """Call begin() before any other meArm calls.  Optional parameters to select a different block of servo connectors or different I2C address."""
-        self.mh = Adafruit_MotorHAT(address) # Address of Adafruit PWM servo driver
+        self.mh = Adafruit_MotorHAT(address, i2c_bus=1) # Address of Adafruit PWM servo driver
         self.pwm = self.mh._pwm
         self.base = block * 4
         self.shoulder = block * 4 + 1
@@ -97,19 +97,15 @@ class meArm():
         time.sleep(0.05)
     def openGripper(self):
         """Open the gripper, dropping whatever is being carried"""
-        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", pi/4.0))
+        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", pi))
         time.sleep(0.3)
     def closeGripper(self):
         """Close the gripper, grabbing onto anything that might be there"""
-        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", -pi/4.0))
+        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", 0.0))
         time.sleep(0.3)
     def paropenGripper(self, value):
         """Partially opens the gripper, dropping whatever is being carried"""
-        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", (1/100)*value*(pi/4.0)))
-        time.sleep(0.3)
-    def parcloseGripper(self, value):
-        """Partially closes the gripper, grabbing onto anything that might be there"""
-        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", (1/100)*value*(-pi/4.0)))
+        self.pwm.setPWM(self.gripper, 0, self.angle2pwm("gripper", (1/100)*value*(pi/2.0)))
         time.sleep(0.3)
     def isReachable(self, x, y, z):
         """Returns True if the point is (theoretically) reachable by the gripper"""

@@ -9,7 +9,7 @@ from pynput.keyboard import Listener
 import meArm
 
 arm = meArm.meArm() # takes inserted data from meArm.py aka calibration data
-arm.begin(0,0x6f) # block address of motor controller, initializes home position (0, 150, 100) and opens Gripper
+arm.begin(0,0x70) # block address of motor controller, initializes home position (0, 150, 100) and opens Gripper
 
 x = 0 ## original x coordinate position, change as needed
 y = 125 ## original y coordinate position, change as needed
@@ -62,6 +62,7 @@ def on_press(key):
     elif var == semi: ## PARIALLY opens gripper, to percentage (inputed, default is 50% but this can be modified) of full open state when ";" key is pressed
         arm.parcloseGripper(50)
     pass
+
 def on_release(key):
     pass
 
