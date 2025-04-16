@@ -4,6 +4,7 @@ meArmPi
 Movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit PWM Servo driver.
 
 The meArm has four mini servos one for the
+
     - gripper, 
     - base, 
     - shoulder
@@ -23,6 +24,7 @@ Various other versions of this library exist:
 [![meArm moving with Inverse Kinematics](http://img.youtube.com/vi/HbxhVs3UmuE/0.jpg)](http://www.youtube.com/watch?v=HbxhVs3UmuE)
 
 This library also contains Demo programs:
+
     - Demo which should draw a virtual cube
     - Joystick which should allow moving the arm with keyboard
     - Controller which uses Game controller and keyboard 
