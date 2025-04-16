@@ -31,7 +31,7 @@ class meArm():
     def __init__(self,
             sweepMinBase     =  96, sweepMaxBase     = 504, angleMinBase     =   1.66, angleMaxBase     = -1.43,
             sweepMinShoulder = 129, sweepMaxShoulder = 451, angleMinShoulder =   2.44, angleMaxShoulder =  0.0,
-            sweepMinElbow    = 440, sweepMaxElbow    = 232, angleMinElbow    =   0.44, angleMaxElbow    = -1.13,
+            sweepMinElbow    = 508, sweepMaxElbow    = 248, angleMinElbow    =   0.40 , angleMaxElbow    = -1.57,
             sweepMinGripper  = 402, sweepMaxGripper  = 172, angleMinGripper  =   0.00, angleMaxGripper  =  1.75):
         """Constructor for meArm - can use as default arm=meArm(), or supply calibration data for servos."""
         self.servoInfo = {}

@@ -27,20 +27,20 @@ mh._pwm.setPWMFreq(50)
 # Move servo on channel O between extrems.
 # MG90S is 500 to 2000 microseconds
 
-set_servo_pulse(15,2000)
+set_servo_pulse(1,2200)
 
-#print('Moving servo on channel 0, press Ctrl-C to quit...')
-#while True:
-#    set_servo_pulse(0,2500)
-#     set_servo_pulse(1,2500)
+# print('Moving servo on channel 0, press Ctrl-C to quit...')
+# while True:
+#     set_servo_pulse(0,2500)
+#     set_servo_pulse(1,2000)
 #     set_servo_pulse(14,2500)
 #     set_servo_pulse(15,2500)
     
-#    time.sleep(1)
-#    set_servo_pulse(0,500)
+#     time.sleep(1)
+#     set_servo_pulse(0,500)
 #     set_servo_pulse(1,500)
 #     set_servo_pulse(14,500)
 #     set_servo_pulse(15,500)
-#    time.sleep(1)
+#     time.sleep(1)
 
     

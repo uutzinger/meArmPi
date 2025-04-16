@@ -1,10 +1,7 @@
-##
-## Sebastian (Sebo) Diaz, 04/09/2021, BME210 Spring 2021
-## Mark Bosset
-##
-
-## Type "pip3 install pynput" on UnixShell in RaspberryPi to install keyboard library
-
+###############################################################
+# meArm Game ad Controller
+# Urs Utzinger 2025
+###############################################################
 import pygame
 import meArm
 import time
@@ -13,7 +10,7 @@ x = 0            ## original x coordinate position, change as needed
 y = 125          ## original y coordinate position, change as needed
 z = 75           ## original z coordinate position, change as needed
 finger = 50
-increment = 10
+increment = 5
 
 pygame.init()
 pygame.joystick.init()
@@ -90,13 +87,13 @@ def on_joyaxis(axis, value):
     elif    axis == 2: ## attack
         y_attack = y + 40
         if not arm.goDirectlyTo(x,y_attack,z): print ("out of range")
-        time.sleep(0.1)
+        time.sleep(0.2)
         if not arm.goDirectlyTo(x,y,z): print ("out of range")
         
     elif    axis == 5: ## defense
         y_defense = y - 40
         if not arm.goDirectlyTo(x,y_defense,z): print ("out of range")
-        time.sleep(0.1)
+        time.sleep(0.5)
         if not arm.goDirectlyTo(x,y,z): print ("out of range")
 
     else:
@@ -157,11 +154,11 @@ while True:
         if event.type == pygame.QUIT:
             quit()
 
-        if event.type == pygame.JOYBUTTONDOWN:
+        elif event.type == pygame.JOYBUTTONDOWN:
             print("Button pressed: ", event.button)
             on_joybutton(event.button)
             
-        if event.type == pygame.JOYAXISMOTION:
+        elif event.type == pygame.JOYAXISMOTION:
             print("Axis moved: ", event.axis, event.value)
             if event.axis == 2 or event.axis == 5: 
                 # We want to run attack and defense only once when the buttons are touched but they provide several events
@@ -179,9 +176,13 @@ while True:
                 previous_axis = event.axis
                 action_time = time.time()
 
-        if event.type == pygame.KEYDOWN:
+        elif event.type == pygame.KEYDOWN:
             print("Key pressed: ", event.key)
             on_press(event.key)
+
+        else:
+            pass
+            # print("Unknown event:", event)
 
 
     clock.tick(100)

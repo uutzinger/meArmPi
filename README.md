@@ -1,9 +1,15 @@
 meArmPi
 =======
 
-Inverse Kinematics movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit PWM Servo driver.
+Movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit PWM Servo driver.
 
-The meArm has four mini servos - one for the gripper, and one each to rotate the base, shoulder joint and elbow joint. But it's not terribly convenient to be specifying things in terms of servo angles when you're much more interested in where you would like to place the gripper, in normal Cartesian (x, y, z) coordinates.
+The meArm has four mini servos one for the
+    - gripper, 
+    - base, 
+    - shoulder
+    - elbow. 
+    
+But it's not terribly convenient to be specifying things in terms of servo angles when you're much more interested in where you would like to place the gripper, in normal Cartesian (x, y, z) coordinates.
 
 This library solves the angles required to send to the servos in order to meet a given position, allowing for much simpler coding.
 
@@ -15,6 +21,11 @@ Various other versions of this library exist:
 * [Beaglebone Black](https://github.com/RorschachUK/meArmBBB)
 
 [![meArm moving with Inverse Kinematics](http://img.youtube.com/vi/HbxhVs3UmuE/0.jpg)](http://www.youtube.com/watch?v=HbxhVs3UmuE)
+
+This library also contains Demo programs:
+    - Demo which should draw a virtual cube
+    - Joystick which should allow moving the arm with keyboard
+    - Controller which uses Game controller and keyboard 
 
 Wiring
 ------
