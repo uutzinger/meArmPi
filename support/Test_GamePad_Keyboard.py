@@ -1,4 +1,5 @@
 import pygame
+import time
 
 pygame.init()
 pygame.joystick.init()
@@ -15,18 +16,30 @@ except pygame.error:
 screen = pygame.display.set_mode((400,300))
 pygame.display.set_caption("Keyboard input")
 clock = pygame.time.Clock()
+check_joy_time = time.time()
+INTERVAL_USERINPUT = 0.03
 
 while True:
+    current_time = time.time()
+    
     for event in pygame.event.get():
+
         if event.type == pygame.QUIT:
             quit()
 
-        if event.type == pygame.JOYBUTTONDOWN:
+        elif event.type == pygame.JOYBUTTONDOWN:
             print("Button pressed: ", event.button)
             
-        if event.type == pygame.JOYAXISMOTION:
-            print("Axis moved: ", event.axis, event.value)
+        elif event.type == pygame.JOYAXISMOTION:
+            if (current_time - check_joy_time) > INTERVAL_USERINPUT:
+                print("Axis moved: ", event.axis, event.value)
+                check_joy_time = current_time
+                current_time = time.time()
 
-        if event.type == pygame.KEYDOWN:
+        elif event.type == pygame.KEYDOWN:
             print("Key pressed", event.key)
-    clock.tick(60)
+            
+        elif event.type == pygame.JOYHATMOTION:
+            print("Hat pressed:", event.value)
+
+    clock.tick(100)

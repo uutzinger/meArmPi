@@ -1,17 +1,18 @@
 meArmPi
 =======
 
-Movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit PWM Servo driver.
+Movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit `adafruit_motor` and `adafruit_pca9685` 
 
-The meArm has four mini servos one for the
-    - gripper, 
-    - base, 
-    - shoulder
-    - elbow. 
+The meArm has four servos one for the
+
+    - gripper (SG90), 
+    - base (SG90), 
+    - shoulder (S3003),
+    - elbow (S3003). 
     
-But it's not terribly convenient to be specifying things in terms of servo angles when you're much more interested in where you would like to place the gripper, in normal Cartesian (x, y, z) coordinates.
+This library provies ability to position the gripper in a Cartesian (x, y, z) coordinate system.
 
-This library solves the angles required to send to the servos in order to meet a given position, allowing for much simpler coding.
+It solves the angles required to set the servos in order to meet a given position.
 
 Coordinates are (approximately) measured in mm from the base rotation centre. Initial 'home' position is at (0, 100, 50), i.e. 100mm forward of the base and 50mm off the ground.
 
@@ -23,9 +24,9 @@ Various other versions of this library exist:
 [![meArm moving with Inverse Kinematics](http://img.youtube.com/vi/HbxhVs3UmuE/0.jpg)](http://www.youtube.com/watch?v=HbxhVs3UmuE)
 
 This library also contains Demo programs:
-    - Demo which should draw a virtual cube
-    - Joystick which should allow moving the arm with keyboard
-    - Controller which uses Game controller and keyboard 
+
+    - `Controller.py` allowing keyboard and jostick input using pygame
+    - `Zero.py` to calibrate the motors
 
 Wiring
 ------
@@ -36,12 +37,6 @@ This uses an Adafruit 16-channel PWM servo driver board to connect the servos to
 * Servo 2: meArm elbow (left hand side servo)
 * Servo 3: meArm gripper
 
-Connect the Adafruit PWM Servo driver to the Pi as follows (I used Adafruit Pi Cobbler to help breadboard it):
-* Adafruit GND to RPi GND
-* Adafruit SCL to RPi SCL0
-* Adafruit SDA to RPi SDA0
-* Adafruit VCC to RPi 3.3V
-* Adafruit V+ to RPi 5V
 
 Usage
 -----
@@ -50,32 +45,28 @@ Usage
 import meArm
 
 def main():
-    arm = meArm.meArm()
-    arm.begin()
+    arm = meArm.meArm(address=0x40)
 	
     while True:
-        arm.openGripper()
-        arm.closeGripper()
-        arm.openGripper()
-        arm.closeGripper()
-        arm.openGripper()
+        arm.open_gripper()
+        arm.close_gripper()
+        arm.open_gripper()
+        arm.close_gripper()
+        arm.open_gripper()
         
         #Go up and left to grab something
-        arm.gotoPoint(-80,100,140) 
-        arm.closeGripper()
+        arm.move_to(-80,100,140) 
+        arm.close_gripper()
         #Go down, forward and right to drop it
-        arm.gotoPoint(70,200,10)
+        arm.move_linear(70,200,10)
         arm.openGripper()
         #Back to start position
-        arm.gotoPoint(0,100,50)
+        arm.move_to(0,100,50)
     return 0
 
 if __name__ == '__main__':
 	main()
 ```
-
-One usage examples is included:
-* DemoIK follows a pre-programmed path defined in Cartesian coordinates
 
 Installation
 ------------
@@ -84,10 +75,11 @@ Installation
 
 Class methods of meArm object
 -----------------------------
-* begin(block=0, address=0x40) - determines which block of four servo connections to use (0 to 3) and which I2C address the Adafruit can be found on - defaults to 0x40.  Begin must be called before any other calls to the meArm instance are made.
-* openGripper() - opens the gripper, letting go of anything it was holding
-* closeGripper() - closes the gripper, perhaps grabbing and holding something as it does so
-* gotoPoint(x, y, z) - move in a straight line from the current point to the requested position
-* goDirectlyTo(x, y, z) - set the servo angles to immediately go to the requested point without caring what path the arm swings through to get there - faster but less predictable than gotoPoint
-* isReachable() - returns true if the point can theoretically be reached by the arm
-* getPos() - current [x, y, z] coordinates
+* begin(address=0x6F) - determines i2c address to use for the motor controller
+* open_gripper() - opens the gripper, letting go of anything it was holding
+* close_gripper() - closes the gripper, perhaps grabbing and holding something as it does so
+* partial_grip(prct) - opens gripper to prct per cent
+* move_liner(x, y, z, step) - move in a straight line from the current point to the requested position
+* move_to(x, y, z) - set the servo angles to immediately go to the requested point without caring what path the arm swings through to get there - faster but less predictable
+* get_position() - current [x, y, z] coordinates
+* get_finger - current gripper open status in per cent

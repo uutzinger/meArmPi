@@ -1,0 +1,22 @@
+{
+    "base": {
+        "zero": 90.0,
+        "min_deg": -90.0,
+        "max_deg": 90.0
+    },
+    "shoulder": {
+        "zero": 62.5,
+        "min_deg": 0.0,
+        "max_deg": 150.0
+    },
+    "elbow": {
+        "zero": 155.0,
+        "min_deg": -180.0,
+        "max_deg": 30.0
+    },
+    "gripper": {
+        "zero": 135.0,
+        "min_deg": 0.0,
+        "max_deg": 125.0
+    }
+}
