@@ -8,7 +8,7 @@
 # 
 # The MIT License (MIT)
 # 
-# Copyright (c) 225 Urs Utzinger
+# Copyright (c) 2025 Urs Utzinger
 # 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -38,7 +38,7 @@ import logging
 STEP = 5.                   ## in mm
 INTERVAL_USERINPUT = 0.03   ## in seconds
 INTERVAL_MOTOR = 0.01       ## in seconds
-JOYTHRESH = 0.01             ## threshold to register joystick activity
+JOYTHRESH = 0.01            ## threshold to register joystick activity
 WINDOW_SIZE = (400, 300)    ## in pixels
 #################################################################################################################
 

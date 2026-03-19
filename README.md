@@ -10,7 +10,7 @@ The meArm has four servos one for the
     - shoulder (S3003),
     - elbow (S3003). 
     
-This library provies ability to position the gripper in a Cartesian (x, y, z) coordinate system.
+This library provides ability to position the gripper in a Cartesian (x, y, z) coordinate system.
 
 It solves the angles required to set the servos in order to meet a given position.
 
@@ -21,9 +21,9 @@ Various other versions of this library exist:
 * [Arduino with Adafruit PWM driver board](https://github.com/RorschachUK/meArm_Adafruit)
 * [Beaglebone Black](https://github.com/RorschachUK/meArmBBB)
 
-[![meArm moving with Inverse Kinematics](http://img.youtube.com/vi/HbxhVs3UmuE/0.jpg)](http://www.youtube.com/watch?v=HbxhVs3UmuE)
+[meArm moving with Inverse Kinematics](http://www.youtube.com/watch?v=HbxhVs3UmuE)
 
-This library also contains Demo programs:
+This library also contains programs to calibrated and manipulate the meArm with a GamePad:
 
     - `Controller.py` allowing keyboard and jostick input using pygame
     - `Zero.py` to calibrate the motors
@@ -83,3 +83,37 @@ Class methods of meArm object
 * move_to(x, y, z) - set the servo angles to immediately go to the requested point without caring what path the arm swings through to get there - faster but less predictable
 * get_position() - current [x, y, z] coordinates
 * get_finger - current gripper open status in per cent
+
+
+
+Calibration
+-----------
+
+Load and run Zero.py
+
+![Load](./support/Running_Zero.png)
+Now the main display for Zero will appear.
+
+![Zero Screen](./support/Zero.png)
+
+With all motors running you will want to align them so that
+
+- The meArm points straight forward (base)
+- The shoulder of the meArm (fist arm segment) points straight up
+- The elbow of the meArm (second aem segment) is horizontal
+- The gripper is closed (do not force it beyond the two finger touching each other)
+
+Do not force the motors beyond the physical limits of the meArm, they will get hot and burn out.
+
+**You might need similar values as shown in the image above.**
+
+If you have issues in moving the motors to the positions you need, you will need to remove the plastic piece from the axle and rotate it to a better position. This is most difficult for the elbow.
+
+Gamepad Setup
+-------------
+
+![Game Pad](./support/Controller.png)
+
+Once the program is running you can disconnect the monitor. If you have a gamepad you can also disconnect the keyboard.
+
+Sometimes the gamepad requires a reset. You unplug and replug it before running the python program. The programs are not made to detect automatically a reconnection. Also if you are using a gamepad needs it needs to be attached prior to starting the software.
