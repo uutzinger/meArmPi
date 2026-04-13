@@ -38,7 +38,7 @@ from adafruit_motor import stepper as stepper_mod
 from adafruit_motorkit import MotorKit
 
 #################################################################################################################
-HAT_ADDRESS = 0x70
+HAT_ADDRESS = 0x6F
 I2C_BUS = 1
 STEPS_PER_REV = 200
 KEYBOARD_RPM = 30.0
@@ -46,10 +46,12 @@ MIN_JOYSTICK_RPM = 5.0
 MAX_JOYSTICK_RPM = 90.0
 JOYTHRESH = 0.10
 INTERVAL_USERINPUT = 0.03
-WINDOW_SIZE = (520, 320)
+WINDOW_SIZE = (520, 360)
 STEPPER_STYLE = "INTERLEAVE"
 STYLE_STEP_FACTOR = 2.0
 MAX_STEPS_PER_TICK = 8
+LEFT_Y_AXIS = 1
+RIGHT_Y_AXIS = 4
 #################################################################################################################
 
 
@@ -96,9 +98,9 @@ def keyboard_commands():
 def joystick_commands(joystick):
     """Read joystick commands for the two steppers."""
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
-    left_y = -axis_value(axes, 1)
-    right_y = -axis_value(axes, 4)
-    return axis_to_rpm(left_y), axis_to_rpm(right_y)
+    left_y = -axis_value(axes, LEFT_Y_AXIS)
+    right_y = -axis_value(axes, RIGHT_Y_AXIS)
+    return axis_to_rpm(left_y), axis_to_rpm(right_y), left_y, right_y
 
 
 def combine_commands(keyboard_rpm, joystick_rpm):
@@ -161,7 +163,7 @@ def service_stepper(stepper_motor, command_rpm, state, current_time):
     return True
 
 
-def update_text(stepper_1_state, stepper_2_state, screen, font, font_small):
+def update_text(stepper_1_state, stepper_2_state, joystick_state, screen, font, font_small):
     """Render motor positions and commanded speeds."""
     text0 = font.render(
         f"Stepper 1: {stepper_1_state['position_steps']:7d} steps  {stepper_1_state['command_rpm']:6.1f} rpm",
@@ -188,6 +190,12 @@ def update_text(stepper_1_state, stepper_2_state, screen, font, font_small):
         True,
         (0, 0, 0),
     )
+    help_7 = font_small.render(
+        f"Raw pygame axis: left[{LEFT_Y_AXIS}]={joystick_state['left_y']:+.2f}  right[{RIGHT_Y_AXIS}]={joystick_state['right_y']:+.2f}",
+        True,
+        (0, 0, 0),
+    )
+    help_8 = font_small.render("Typical pygame stick range is about -1.00 to +1.00", True, (0, 0, 0))
 
     screen.fill((255, 255, 255))
     screen.blit(text0, (10, 20))
@@ -198,6 +206,8 @@ def update_text(stepper_1_state, stepper_2_state, screen, font, font_small):
     screen.blit(help_4, (10, 210))
     screen.blit(help_5, (10, 250))
     screen.blit(help_6, (10, 270))
+    screen.blit(help_7, (10, 290))
+    screen.blit(help_8, (10, 310))
     pygame.display.flip()
 
 
@@ -230,8 +240,9 @@ def main():
     current_time = time.time()
     stepper_1_state = {"position_steps": 0, "command_rpm": 0.0, "last_step_time": current_time}
     stepper_2_state = {"position_steps": 0, "command_rpm": 0.0, "last_step_time": current_time}
+    joystick_state = {"motor_1_rpm": 0.0, "motor_2_rpm": 0.0, "left_y": 0.0, "right_y": 0.0}
 
-    update_text(stepper_1_state, stepper_2_state, screen, font, font_small)
+    update_text(stepper_1_state, stepper_2_state, joystick_state, screen, font, font_small)
 
     check_userinput_time = current_time
     running = True
@@ -243,11 +254,17 @@ def main():
                     running = False
 
             keyboard_1_rpm, keyboard_2_rpm = keyboard_commands()
-            joystick_1_rpm = 0.0
-            joystick_2_rpm = 0.0
+            joystick_1_rpm = joystick_state["motor_1_rpm"]
+            joystick_2_rpm = joystick_state["motor_2_rpm"]
+            previous_left_y = joystick_state["left_y"]
+            previous_right_y = joystick_state["right_y"]
 
             if joy and (current_time - check_userinput_time) > INTERVAL_USERINPUT:
-                joystick_1_rpm, joystick_2_rpm = joystick_commands(joystick)
+                joystick_1_rpm, joystick_2_rpm, left_y, right_y = joystick_commands(joystick)
+                joystick_state["motor_1_rpm"] = joystick_1_rpm
+                joystick_state["motor_2_rpm"] = joystick_2_rpm
+                joystick_state["left_y"] = left_y
+                joystick_state["right_y"] = right_y
                 check_userinput_time = current_time
 
             command_1_rpm = combine_commands(keyboard_1_rpm, joystick_1_rpm)
@@ -263,8 +280,10 @@ def main():
                 or changed_2
                 or previous_1_rpm != stepper_1_state["command_rpm"]
                 or previous_2_rpm != stepper_2_state["command_rpm"]
+                or previous_left_y != joystick_state["left_y"]
+                or previous_right_y != joystick_state["right_y"]
             ):
-                update_text(stepper_1_state, stepper_2_state, screen, font, font_small)
+                update_text(stepper_1_state, stepper_2_state, joystick_state, screen, font, font_small)
 
             clock.tick(120)
     finally:
