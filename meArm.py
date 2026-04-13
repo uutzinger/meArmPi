@@ -87,7 +87,7 @@ import os
 import json
 import time
 import logging
-from typing import Tuple, Optional
+from typing import Tuple
 
 import board
 from adafruit_pca9685 import PCA9685
@@ -101,6 +101,8 @@ default_logger = logging.getLogger(__name__)
 DEG2RAD = math.pi / 180.0
 RAD2DEG = 180.0 / math.pi
 DEFAULT_CONFIG = "mearm_config.json"
+SERVO_MIN_ANGLE = 0.0
+SERVO_MAX_ANGLE = 180.0
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
     """Clamp a float between min_val and max_val."""
@@ -138,6 +140,10 @@ class meArm:
         self.x = 0.0
         self.y = 0.0
         self.z = 0.0
+        self.base = 0.0
+        self.shoulder = 0.0
+        self.elbow = 0.0
+        self.gripper = 0.0
         self.finger = 0.0
 
         # Home wrist and gripper
@@ -173,6 +179,20 @@ class meArm:
         deg = clamp(deg, self.calib[joint]['min_deg'], self.calib[joint]['max_deg'])
         return deg * DEG2RAD
 
+    def _gripper_angle_from_percent(self, percent: float) -> float:
+        """Convert gripper open percentage to a configured joint angle in degrees."""
+        pct = clamp(percent, 0.0, 100.0)
+        info = self.calib['gripper']
+        return info['min_deg'] + (info['max_deg'] - info['min_deg']) * (1 - pct / 100.0)
+
+    def _gripper_percent_from_angle(self, angle_deg: float) -> float:
+        """Convert a configured gripper joint angle in degrees to open percentage."""
+        info = self.calib['gripper']
+        span = info['max_deg'] - info['min_deg']
+        if span == 0:
+            return 0.0
+        return clamp((info['max_deg'] - angle_deg) * 100.0 / span, 0.0, 100.0)
+
     def _angle_to_servo(self, joint: str, angle_rad: float) -> float:
         """
         Convert a joint angle (rad) to a servo command (degrees),
@@ -196,7 +216,7 @@ class meArm:
             cmd = deg + zero - self.calib[joint]['max_deg']
 
         # Clamp final command to servo limits
-        return clamp(cmd, 0, 180)
+        return clamp(cmd, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE)
 
     def _servo_to_angle(self, joint: str, cmd: float) -> float:
         """
@@ -221,6 +241,86 @@ class meArm:
 
         return deg * DEG2RAD
 
+    def _update_cartesian_state(self, base_rad: float, shoulder_rad: float, elbow_rad: float) -> None:
+        """Sync cached Cartesian pose from the current joint angles."""
+        self.x, self.y, self.z = kinematics.forward_kinematics(base_rad, shoulder_rad, elbow_rad)
+
+    def _update_joint_state(self, base_rad: float, shoulder_rad: float, elbow_rad: float) -> None:
+        """Sync cached joint-angle state from radians."""
+        self.base = base_rad * RAD2DEG
+        self.shoulder = shoulder_rad * RAD2DEG
+        self.elbow = elbow_rad * RAD2DEG
+        self._update_cartesian_state(base_rad, shoulder_rad, elbow_rad)
+
+    def _update_gripper_state(self, gripper_rad: float) -> None:
+        """Sync cached gripper angle and percentage state from radians."""
+        self.gripper = gripper_rad * RAD2DEG
+        self.finger = self._gripper_percent_from_angle(self.gripper)
+
+    def _apply_joint_angles(self, base_rad: float, shoulder_rad: float, elbow_rad: float) -> Tuple[float, float, float]:
+        """Clamp, command, and store the actual joint angles reached by the servos."""
+        base_rad = self._angle_limits('base', base_rad)
+        shoulder_rad = self._angle_limits('shoulder', shoulder_rad)
+        elbow_rad = self._angle_limits('elbow', elbow_rad)
+
+        motor_base = self._angle_to_servo('base', base_rad)
+        motor_shoulder = self._angle_to_servo('shoulder', shoulder_rad)
+        motor_elbow = self._angle_to_servo('elbow', elbow_rad)
+
+        self.servos['base'].angle = motor_base
+        self.servos['shoulder'].angle = motor_shoulder
+        self.servos['elbow'].angle = motor_elbow
+
+        base_rad = self._servo_to_angle('base', motor_base)
+        shoulder_rad = self._servo_to_angle('shoulder', motor_shoulder)
+        elbow_rad = self._servo_to_angle('elbow', motor_elbow)
+        self._update_joint_state(base_rad, shoulder_rad, elbow_rad)
+        return base_rad, shoulder_rad, elbow_rad
+
+    def _apply_gripper_angle(self, gripper_rad: float) -> float:
+        """Clamp, command, and store the actual gripper angle reached by the servo."""
+        gripper_rad = self._angle_limits('gripper', gripper_rad)
+        motor_gripper = self._angle_to_servo('gripper', gripper_rad)
+        self.servos['gripper'].angle = motor_gripper
+        gripper_rad = self._servo_to_angle('gripper', motor_gripper)
+        self._update_gripper_state(gripper_rad)
+        return gripper_rad
+
+    def set_joint_angles(self, base: float, shoulder: float, elbow: float) -> Tuple[float, float, float]:
+        """
+        Set base, shoulder, and elbow device angles in degrees.
+        Returns the actual joint angles after clamping and servo-limit enforcement.
+        """
+        base_rad, shoulder_rad, elbow_rad = self._apply_joint_angles(
+            base * DEG2RAD,
+            shoulder * DEG2RAD,
+            elbow * DEG2RAD,
+        )
+        self.logger.info(
+            "Joint angles set to base=%.1f shoulder=%.1f elbow=%.1f",
+            base_rad * RAD2DEG,
+            shoulder_rad * RAD2DEG,
+            elbow_rad * RAD2DEG,
+        )
+        return self.get_joint_angles()
+
+    def set_gripper_angle(self, gripper: float) -> float:
+        """
+        Set gripper device angle in degrees.
+        Returns the actual gripper angle after clamping and servo-limit enforcement.
+        """
+        gripper_rad = self._apply_gripper_angle(gripper * DEG2RAD)
+        self.logger.info("Gripper angle set to %.1f", gripper_rad * RAD2DEG)
+        return self.get_gripper_angle()
+
+    def get_joint_angles(self) -> Tuple[float, float, float]:
+        """Return the current base, shoulder, and elbow device angles in degrees."""
+        return (self.base, self.shoulder, self.elbow)
+
+    def get_gripper_angle(self) -> float:
+        """Return the current gripper device angle in degrees."""
+        return self.gripper
+
     def move_to(self, x: float, y: float, z: float) -> bool:
         """
         Move end effector to an (x,y,z) position in a single step.
@@ -241,27 +341,8 @@ class meArm:
         if sol is None:
             self.logger.warning("Position out of inverse kinematics range: %s", (x, y, z))
             return False
-        theta0, theta1, theta2 = sol
-        # clamp to joint limits
-        theta0 = self._angle_limits('base', theta0)
-        theta1 = self._angle_limits('shoulder', theta1)
-        theta2 = self._angle_limits('elbow', theta2)
-        # convert to motor angles
-        motor_base     = self._angle_to_servo('base', theta0)
-        motor_shoulder = self._angle_to_servo('shoulder', theta1)
-        motor_elbow    = self._angle_to_servo('elbow', theta2)
-        # send to servos
-        self.servos['base'].angle     = motor_base
-        self.servos['shoulder'].angle = motor_shoulder
-        self.servos['elbow'].angle    = motor_elbow 
-
-        # update state taking into account clipping that migth have occured
-        theta0 = self._servo_to_angle('base', motor_base)
-        theta1 = self._servo_to_angle('shoulder', motor_shoulder)
-        theta2 = self._servo_to_angle('elbow', motor_elbow)
-        x,y,z = kinematics.forward_kinematics(theta0, theta1, theta2)
-        self.x, self.y, self.z = x, y, z
-        self.logger.info("Moved to (%.1f, %.1f, %.1f)", x, y, z)
+        self._apply_joint_angles(*sol)
+        self.logger.info("Moved to (%.1f, %.1f, %.1f)", self.x, self.y, self.z)
         return True
 
     def move_linear(self, x: float, y: float, z: float, step: float = 10.0, delay: float = 0.05) -> bool:
@@ -284,31 +365,21 @@ class meArm:
 
     def open_gripper(self) -> None:
         """Fully open the gripper."""
-        # Use full-open joint angle (radians) then map to servo
-        angle_rad = self.calib['gripper']['min_deg'] * DEG2RAD
-        self.servos['gripper'].angle = self._angle_to_servo('gripper', angle_rad)
-        self.finger = 100.0
+        self._apply_gripper_angle(self.calib['gripper']['min_deg'] * DEG2RAD)
         self.logger.info("Gripper opened")
 
     def close_gripper(self) -> None:
         """Fully close the gripper."""
-        angle_rad = self.calib['gripper']['max_deg'] * DEG2RAD
-        self.servos['gripper'].angle = self._angle_to_servo('gripper', angle_rad)
-        self.finger = 0.0
+        self._apply_gripper_angle(self.calib['gripper']['max_deg'] * DEG2RAD)
         self.logger.info("Gripper closed")
 
     def partial_grip(self, percent: float) -> None:
         """
         Set gripper opening to a percentage (0=closed, 100=open).
         """
-        pct = clamp(percent, 0.0, 100.0)
-        info = self.calib['gripper']
-        # Compute joint angle in degrees then to radians
-        angle_deg = info['min_deg'] + (info['max_deg'] - info['min_deg']) * (1 - pct / 100.0)
-        angle_rad = angle_deg * DEG2RAD
-        self.servos['gripper'].angle = self._angle_to_servo('gripper', angle_rad)
-        self.finger = pct
-        self.logger.info("Gripper set to %.1f%%", pct)
+        angle_deg = self._gripper_angle_from_percent(percent)
+        self._apply_gripper_angle(angle_deg * DEG2RAD)
+        self.logger.info("Gripper set to %.1f%%", self.finger)
 
     def get_position(self) -> Tuple[float, float, float]:
         """Return the current (x,y,z) of the end effector."""

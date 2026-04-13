@@ -1,46 +1,103 @@
-# Simple demo of using auxiliary PWM pins on Raspi MotorHat
+#!/usr/bin/env python3
+"""
+Simple utility to command one servo output on a PCA9685 by pulse width.
 
-from Adafruit_MotorHAT import Adafruit_MotorHAT, Adafruit_DCMotor
-import time
+This is intended for assembly and calibration work where students are told an
+approximate pulse width that should correspond to a servo position.
 
-# Initialise the PCA9685 using the default address (0x60) or (0x6F).
-mh = Adafruit_MotorHAT(addr=0x70, i2c_bus=1) 
+Examples:
+    python3 moveMotor.py 1 2200
+    python3 moveMotor.py 14 1500 --address 0x6F
+"""
 
-# Helper function to make setting a servo pulse width simpler.
-# Pulse is in microseconds
-# Pulse is in microseconds
-def set_servo_pulse(channel, pulse):
-    pulse_length = (1000000. / 50. ) / 4096.    # 1,000,000 us per second
-                                                # 50 Hz PWM for MG90 servo motors
-                                                # 12 bits of resolution
-    pulse_width = int(float(pulse) / pulse_length)
-    mh._pwm.setPWM(channel, 0, pulse_width)     # do not change 0 here.
-    print(pulse_width)
-    
-# Set frequency to 50hz, which is spec for MG90. 
-# You can not use Servo Motor and Stepper Motor on the same hat simultaneously 
-# as the stepper motor requires a different frequency.
-mh._pwm.setPWMFreq(50)
+import argparse
 
-# There are only 4 channels available: 0, 1, 14 and 15
-# Do not use any other channels.
-# Move servo on channel O between extrems.
-# MG90S is 500 to 2000 microseconds
+import board
+from adafruit_pca9685 import PCA9685
 
-set_servo_pulse(1,2200)
+SERVO_CHANNELS = (0, 1, 14, 15)
+DEFAULT_ADDRESS = 0x70
+DEFAULT_FREQUENCY = 50
+MIN_PULSE_US = 500
+MAX_PULSE_US = 2500
 
-# print('Moving servo on channel 0, press Ctrl-C to quit...')
-# while True:
-#     set_servo_pulse(0,2500)
-#     set_servo_pulse(1,2000)
-#     set_servo_pulse(14,2500)
-#     set_servo_pulse(15,2500)
-    
-#     time.sleep(1)
-#     set_servo_pulse(0,500)
-#     set_servo_pulse(1,500)
-#     set_servo_pulse(14,500)
-#     set_servo_pulse(15,500)
-#     time.sleep(1)
 
-    
+def clamp(value, min_val, max_val):
+    return max(min_val, min(value, max_val))
+
+
+def pulse_to_duty_cycle(pulse_us, frequency_hz):
+    """Convert a pulse width in microseconds to a 16-bit duty cycle."""
+    period_us = 1_000_000.0 / frequency_hz
+    duty_cycle = int((pulse_us / period_us) * 0xFFFF)
+    return clamp(duty_cycle, 0, 0xFFFF)
+
+
+def pulse_to_angle(pulse_us, min_pulse_us=MIN_PULSE_US, max_pulse_us=MAX_PULSE_US):
+    """Approximate servo command angle corresponding to a pulse width."""
+    bounded = clamp(pulse_us, min_pulse_us, max_pulse_us)
+    span = max_pulse_us - min_pulse_us
+    if span == 0:
+        return 0.0
+    return (bounded - min_pulse_us) * 180.0 / span
+
+
+def set_servo_pulse(pca, channel, pulse_us):
+    """Set one PCA9685 channel to a pulse width in microseconds."""
+    duty_cycle = pulse_to_duty_cycle(pulse_us, pca.frequency)
+    pca.channels[channel].duty_cycle = duty_cycle
+    return duty_cycle
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Command one servo output on a PCA9685 by pulse width."
+    )
+    parser.add_argument(
+        "channel",
+        type=int,
+        choices=SERVO_CHANNELS,
+        help="Servo channel to drive. Valid channels: 0, 1, 14, 15.",
+    )
+    parser.add_argument(
+        "pulse_us",
+        type=float,
+        help="Pulse width in microseconds. Typical servo range is about 500 to 2500 us.",
+    )
+    parser.add_argument(
+        "--address",
+        type=lambda value: int(value, 0),
+        default=DEFAULT_ADDRESS,
+        help="I2C address of the PCA9685 board. Default: 0x70.",
+    )
+    parser.add_argument(
+        "--frequency",
+        type=int,
+        default=DEFAULT_FREQUENCY,
+        help="PWM frequency in Hz. Servos typically use 50 Hz.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    i2c = board.I2C()
+    pca = PCA9685(i2c, address=args.address)
+    pca.frequency = args.frequency
+
+    try:
+        duty_cycle = set_servo_pulse(pca, args.channel, args.pulse_us)
+        approx_angle = pulse_to_angle(args.pulse_us)
+        print(f"Channel: {args.channel}")
+        print(f"Address: 0x{args.address:02X}")
+        print(f"Frequency: {args.frequency} Hz")
+        print(f"Pulse width: {args.pulse_us:.0f} us")
+        print(f"Duty cycle: {duty_cycle} / 65535")
+        print(f"Approx angle: {approx_angle:.1f} deg (assuming {MIN_PULSE_US}-{MAX_PULSE_US} us -> 0-180 deg)")
+    finally:
+        pca.deinit()
+
+
+if __name__ == "__main__":
+    main()

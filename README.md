@@ -1,119 +1,250 @@
 meArmPi
 =======
 
-Movement control library in Python for Phenoptix meArm on Raspberry Pi via Adafruit `adafruit_motor` and `adafruit_pca9685` 
+Python control tools for the Phenoptix meArm on Raspberry Pi using Adafruit's CircuitPython motor libraries.
 
-The meArm has four servos one for the
+This repository contains:
 
-    - gripper (SG90), 
-    - base (SG90), 
-    - shoulder (S3003),
-    - elbow (S3003). 
-    
-This library provides ability to position the gripper in a Cartesian (x, y, z) coordinate system.
+- `meArm.py`: inverse-kinematics and direct joint-angle control for the 4-servo meArm
+- `Controller.py`: keyboard and gamepad controller in Cartesian `x/y/z` space
+- `Controller-Direct.py`: keyboard and gamepad controller in direct joint/device angles
+- `Controller-Stepper.py`: keyboard and joystick controller for 2 steppers on an Adafruit Motor HAT
+- `Zero.py`: calibration tool for servo zero offsets and joint limits
+- `moveMotor.py`: simple pulse-width utility for servo setup during assembly
+- `mearm_config.json`: saved zero offsets and per-joint angle limits
 
-It solves the angles required to set the servos in order to meet a given position.
+Hardware
+--------
 
-Coordinates are (approximately) measured in mm from the base rotation centre. Initial 'home' position is at (0, 100, 50), i.e. 100mm forward of the base and 50mm off the ground.
+The meArm uses four servos:
 
-Various other versions of this library exist:
-* [Arduino](https://github.com/yorkhackspace/meArm)
-* [Arduino with Adafruit PWM driver board](https://github.com/RorschachUK/meArm_Adafruit)
-* [Beaglebone Black](https://github.com/RorschachUK/meArmBBB)
+- gripper
+- base
+- shoulder
+- elbow
 
-[meArm moving with Inverse Kinematics](http://www.youtube.com/watch?v=HbxhVs3UmuE)
+The servo-based arm control in this repository uses:
 
-This library also contains programs to calibrated and manipulate the meArm with a GamePad:
+- `board`
+- `adafruit_pca9685`
+- `adafruit_motor.servo`
 
-    - `Controller.py` allowing keyboard and jostick input using pygame
-    - `Zero.py` to calibrate the motors
+The stepper controller uses:
+
+- `board`
+- `adafruit_motorkit`
+- `adafruit_motor.stepper`
 
 Wiring
 ------
 
-This uses an Adafruit 16-channel PWM servo driver board to connect the servos to the Raspberry Pi.  Use the first block of four servo connectors, and connect yellow wire to the top, brown wire to the bottom.
-* Servo 0: meArm rotating base
-* Servo 1: meArm shoulder (right hand side servo)
-* Servo 2: meArm elbow (left hand side servo)
-* Servo 3: meArm gripper
+The servo arm is driven from a PCA9685-based servo board. In the current code the channels are:
 
+- channel `0`: base
+- channel `1`: shoulder
+- channel `14`: elbow
+- channel `15`: gripper
 
-Usage
------
+This mapping is used in both [`meArm.py`](./meArm.py) and [`Zero.py`](./Zero.py).
 
-```
-import meArm
+Project Overview
+----------------
 
-def main():
-    arm = meArm.meArm(address=0x40)
-	
-    while True:
-        arm.open_gripper()
-        arm.close_gripper()
-        arm.open_gripper()
-        arm.close_gripper()
-        arm.open_gripper()
-        
-        #Go up and left to grab something
-        arm.move_to(-80,100,140) 
-        arm.close_gripper()
-        #Go down, forward and right to drop it
-        arm.move_linear(70,200,10)
-        arm.openGripper()
-        #Back to start position
-        arm.move_to(0,100,50)
-    return 0
+`meArm.py` supports two control modes:
 
-if __name__ == '__main__':
-	main()
-```
+1. Cartesian motion using inverse kinematics
+2. Direct joint/device angle control
+
+Cartesian motion tracks and commands:
+
+- `x`
+- `y`
+- `z`
+- gripper opening percentage
+
+Direct motion tracks and commands:
+
+- `base`
+- `shoulder`
+- `elbow`
+- `gripper`
+
+The servo zero offsets and joint limits are loaded from `mearm_config.json`.
+
+Configuration Model
+-------------------
+
+Each joint in `mearm_config.json` has:
+
+- `zero`: servo command angle used as the calibrated zero offset
+- `min_deg`: minimum joint/device angle
+- `max_deg`: maximum joint/device angle
+
+Important distinction:
+
+- joint/device angles are the physical arm angles used by `meArm.py`
+- servo command angles are the raw `0..180` values sent to the Adafruit servo API
+- pulse width in microseconds is the low-level PWM representation used by `moveMotor.py`
 
 Installation
 ------------
-* Clone this repository to your local machine
-* Run with sudo, i.e. 'sudo python DemoIK.py'
 
-Class methods of meArm object
------------------------------
-* begin(address=0x6F) - determines i2c address to use for the motor controller
-* open_gripper() - opens the gripper, letting go of anything it was holding
-* close_gripper() - closes the gripper, perhaps grabbing and holding something as it does so
-* partial_grip(prct) - opens gripper to prct per cent
-* move_liner(x, y, z, step) - move in a straight line from the current point to the requested position
-* move_to(x, y, z) - set the servo angles to immediately go to the requested point without caring what path the arm swings through to get there - faster but less predictable
-* get_position() - current [x, y, z] coordinates
-* get_finger - current gripper open status in per cent
+Clone the repository and install the Python dependencies you need for the tools you plan to use.
 
+Python dependencies:
 
+- `pygame`
+- `adafruit-circuitpython-pca9685`
+- `adafruit-circuitpython-motor`
+- `adafruit-circuitpython-motorkit`
+
+Example:
+
+```bash
+python3 -m pip install pygame \
+    adafruit-circuitpython-pca9685 \
+    adafruit-circuitpython-motor \
+    adafruit-circuitpython-motorkit
+```
+
+Raspberry Pi prerequisites:
+
+- enable I2C on the Raspberry Pi
+- make sure the user running the scripts has permission to access I2C devices
+- install system support packages if your image does not already provide them
+
+Typical system packages on Raspberry Pi OS:
+
+- `python3-pip`
+- `python3-dev`
+- `python3-smbus`
+- `i2c-tools`
+
+Example:
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip python3-dev python3-smbus i2c-tools
+```
+
+To verify the board is visible on I2C:
+
+```bash
+i2cdetect -y 1
+```
+
+Core Library Usage
+------------------
+
+Example using Cartesian inverse-kinematics control:
+
+```python
+import meArm
+
+arm = meArm.meArm(address=0x6F)
+
+arm.open_gripper()
+arm.move_to(-80, 100, 140)
+arm.close_gripper()
+arm.move_linear(70, 200, 10)
+arm.open_gripper()
+arm.move_to(0, 150, 100)
+```
+
+Example using direct joint-angle control:
+
+```python
+import meArm
+
+arm = meArm.meArm(address=0x6F)
+
+arm.set_joint_angles(base=0, shoulder=90, elbow=0)
+arm.set_gripper_angle(40)
+
+print(arm.get_joint_angles())
+print(arm.get_gripper_angle())
+```
+
+Current `meArm` Methods
+-----------------------
+
+Main Cartesian methods:
+
+- `open_gripper()`
+- `close_gripper()`
+- `partial_grip(percent)`
+- `move_to(x, y, z)`
+- `move_linear(x, y, z, step=10.0, delay=0.05)`
+- `get_position()`
+- `get_finger()`
+
+Direct-angle methods:
+
+- `set_joint_angles(base, shoulder, elbow)`
+- `set_gripper_angle(gripper)`
+- `get_joint_angles()`
+- `get_gripper_angle()`
+
+Included Programs
+-----------------
+
+`Controller.py`
+
+- keyboard and gamepad control in Cartesian space
+- arrow keys and `w/s` move the arm in `x/y/z`
+- gripper is controlled as open percentage
+
+`Controller-Direct.py`
+
+- keyboard and gamepad control in direct joint/device angles
+- useful when you want to bypass inverse kinematics and move each joint directly
+
+`Controller-Stepper.py`
+
+- controls two stepper motors on an Adafruit Motor HAT
+- keyboard uses `Up/Down` for stepper 1 and `W/S` for stepper 2
+- left and right joystick Y axes provide variable-speed stepper control
+
+`Zero.py`
+
+- calibration utility for setting servo zero offsets and saving `mearm_config.json`
+- also displays the configured min/max joint limits
+
+`moveMotor.py`
+
+- direct pulse-width utility for servo setup and assembly checks
+- useful when students are told an approximate pulse width for a target servo position
+
+Example:
+
+```bash
+python3 moveMotor.py 1 2200
+python3 moveMotor.py 14 1500 --address 0x6F
+```
 
 Calibration
 -----------
 
-Load and run Zero.py
+Run `Zero.py` to calibrate the arm and save `mearm_config.json`.
 
-![Load](./support/Running_Zero.png)
-Now the main display for Zero will appear.
+When calibrating:
 
-![Zero Screen](./support/Zero.png)
+- base should point straight forward
+- shoulder should point straight up
+- elbow should be horizontal
+- gripper should be in the intended reference position for your build
 
-With all motors running you will want to align them so that
+Do not force the servos beyond the mechanical limits of the meArm. If a horn is badly misaligned, remove it and reposition it on the spline instead of forcing the linkage.
 
-- The meArm points straight forward (base)
-- The shoulder of the meArm (fist arm segment) points straight up
-- The elbow of the meArm (second aem segment) is horizontal
-- The gripper is closed (do not force it beyond the two finger touching each other)
-
-Do not force the motors beyond the physical limits of the meArm, they will get hot and burn out.
-
-**You might need similar values as shown in the image above.**
-
-If you have issues in moving the motors to the positions you need, you will need to remove the plastic piece from the axle and rotate it to a better position. This is most difficult for the elbow.
-
-Gamepad Setup
+Gamepad Notes
 -------------
 
-![Game Pad](./support/Controller.png)
+The pygame-based controllers expect the gamepad to be connected before startup.
 
-Once the program is running you can disconnect the monitor. If you have a gamepad you can also disconnect the keyboard.
+If the controller is unplugged and replugged while a program is running, the programs do not currently attempt to reconnect automatically.
 
-Sometimes the gamepad requires a reset. You unplug and replug it before running the python program. The programs are not made to detect automatically a reconnection. Also if you are using a gamepad needs it needs to be attached prior to starting the software.
+Notes
+-----
+
+- The default I2C address depends on the script you run. Check the script before use and adjust if your board is strapped differently.
+- Servo and stepper control are different hardware modes. Do not assume the same HAT/frequency setup is appropriate for both without checking your wiring and hardware configuration.
