@@ -53,6 +53,7 @@ STEPPER_RPM        = 180.0
 MIN_STEPPER_RPM    = 5.0
 MAX_STEPPER_RPM    = 240.0
 STEPPER_ACCEL_RPM_PER_SEC = 240.0
+STEPPER_DECEL_RPM_PER_SEC = 1200.0
 STEPS_PER_REV      = 200
 STEPPER_STYLE      = "SINGLE"    # "SINGLE", "DOUBLE", "INTERLEAVE", or "MICROSTEP"
 STYLE_STEP_FACTOR  = 1.0    # 1.0 for SINGLE/DOUBLE, 2.0 for INTERLEAVE, 16.0 for MICROSTEP (assuming 16 microsteps per full step)
@@ -280,8 +281,10 @@ def rpm_to_interval(rpm):
 
 
 def ramp_rpm(current_rpm, target_rpm, elapsed):
-    """Move the current RPM toward the target RPM using the configured acceleration."""
-    max_delta = STEPPER_ACCEL_RPM_PER_SEC * elapsed
+    """Move the current RPM toward the target RPM using acceleration or braking."""
+    braking = target_rpm == 0.0 or current_rpm * target_rpm < 0.0 or abs(target_rpm) < abs(current_rpm)
+    rate = STEPPER_DECEL_RPM_PER_SEC if braking else STEPPER_ACCEL_RPM_PER_SEC
+    max_delta = rate * elapsed
     delta = target_rpm - current_rpm
     if abs(delta) <= max_delta:
         return target_rpm
