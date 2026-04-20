@@ -100,6 +100,24 @@ Completed
    The left center/share/select button enters programming mode.
    The right center/options/start button exits programming mode.
 
+12. Add programming-mode visual feedback.
+   Status: completed
+   The direct-controller pygame window now shows an LED-style status indicator.
+   The indicator blinks red while waypoint programming mode is active and is gray in run mode.
+
+13. Add combined direct-servo and M3/M4 stepper controller.
+   Status: completed
+   Added `Controller-Direct-wStepper.py`.
+   The combined controller uses mutually exclusive `SERVO`, `STEPPER`, and `IDLE` modes because servo and stepper operation share the PCA9685 frequency.
+   Pressing `R1` or `L1` automatically enters stepper mode.
+   Using servo joystick, gripper, waypoint, or programming controls automatically returns to servo mode.
+   Keyboard `1`, `2`, and `0` remain available as fallback controls for servo, stepper, and idle/release modes.
+   Servo mode keeps the direct joint controls, waypoint programming, and D-pad/trigger gripper controls.
+   Stepper mode uses the M3/M4 bridge through `MotorKit.stepper2`.
+   In stepper mode, `R1` runs the M3/M4 stepper forward and `L1` runs it backward.
+   Switching from servo to stepper saves the last servo angles, releases servo PWM outputs, and then initializes the stepper driver.
+   Switching from stepper to servo releases the stepper, initializes servo PWM at 50 Hz, and restores the last saved servo angles.
+
 Notes
 
 - The direct controller uses joint/device angles, not raw servo command angles.

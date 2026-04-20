@@ -103,6 +103,12 @@ RAD2DEG = 180.0 / math.pi
 DEFAULT_CONFIG = "mearm_config.json"
 SERVO_MIN_ANGLE = 0.0
 SERVO_MAX_ANGLE = 180.0
+SERVO_CHANNELS = {
+    'base': 0,
+    'shoulder': 1,
+    'elbow': 14,
+    'gripper': 15,
+}
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
     """Clamp a float between min_val and max_val."""
@@ -118,6 +124,7 @@ class meArm:
         address: int = 0x40,
         config_file: str = DEFAULT_CONFIG,
         logger: logging.Logger = default_logger,
+        home_on_start: bool = True,
     ):
         self.logger = logger
         self.config_file = config_file
@@ -130,10 +137,10 @@ class meArm:
 
         # Setup servos with calibration and limits
         self.servos = {
-            'base': self._setup_servo(0, self.calib['base']),
-            'shoulder': self._setup_servo(1, self.calib['shoulder']),
-            'elbow': self._setup_servo(14, self.calib['elbow']),
-            'gripper': self._setup_servo(15, self.calib['gripper']),
+            'base': self._setup_servo(SERVO_CHANNELS['base'], self.calib['base']),
+            'shoulder': self._setup_servo(SERVO_CHANNELS['shoulder'], self.calib['shoulder']),
+            'elbow': self._setup_servo(SERVO_CHANNELS['elbow'], self.calib['elbow']),
+            'gripper': self._setup_servo(SERVO_CHANNELS['gripper'], self.calib['gripper']),
         }
 
         # Track current state
@@ -146,9 +153,12 @@ class meArm:
         self.gripper = 0.0
         self.finger = 0.0
 
-        # Home wrist and gripper
-        self.open_gripper()
-        self.move_to(0.0, 150.0, 100.0)
+        # Home wrist and gripper when requested.
+        # Combined servo/stepper controllers disable this during mode switches
+        # so reinitializing the servo driver does not unexpectedly move the arm.
+        if home_on_start:
+            self.open_gripper()
+            self.move_to(0.0, 150.0, 100.0)
 
     def _load_config(self) -> None:
         """Load calibration zeros and limits from JSON config."""
@@ -320,6 +330,19 @@ class meArm:
     def get_gripper_angle(self) -> float:
         """Return the current gripper device angle in degrees."""
         return self.gripper
+
+    def release_servos(self) -> None:
+        """Disable PWM on all servo channels so another mode can own the PCA9685."""
+        for channel in SERVO_CHANNELS.values():
+            self.pca.channels[channel].duty_cycle = 0
+        self.logger.info("Servo PWM outputs released")
+
+    def deinit(self) -> None:
+        """Release servo outputs and deinitialize the PCA9685 object when supported."""
+        self.release_servos()
+        deinit = getattr(self.pca, "deinit", None)
+        if deinit is not None:
+            deinit()
 
     def move_to(self, x: float, y: float, z: float) -> bool:
         """

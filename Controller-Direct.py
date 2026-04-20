@@ -42,6 +42,7 @@ import meArm
 STEP = 5.0                  # degrees per keyboard step
 INTERVAL_USERINPUT = 0.03   # seconds
 INTERVAL_MOTOR = 0.01       # seconds
+INTERVAL_BLINK = 0.35       # seconds
 JOYTHRESH = 0.01            # minimum stick movement to register
 WINDOW_SIZE = (400, 340)    # pixels
 WAYPOINT_FILE = Path(__file__).with_name("controller_direct_waypoints.json")
@@ -263,6 +264,15 @@ def update_text(base, shoulder, elbow, gripper, programming_mode, status, screen
     screen.blit(text3, (10, 100))
     screen.blit(text4, (10, 130))
     screen.blit(text5, (10, 150))
+    if programming_mode:
+        blink_on = int(time.time() / INTERVAL_BLINK) % 2 == 0
+        led_color = (220, 0, 0) if blink_on else (255, 255, 255)
+        led_outline = (220, 0, 0)
+    else:
+        led_color = (180, 180, 180)
+        led_outline = (120, 120, 120)
+    pygame.draw.circle(screen, led_color, (370, 137), 8)
+    pygame.draw.circle(screen, led_outline, (370, 137), 8, 2)
 
     screen.blit(help_1, (10, 180))
     screen.blit(help_2, (10, 200))
@@ -310,6 +320,7 @@ def main():
 
     motor_time = time.time()
     check_userinput_time = time.time()
+    blink_time = time.time()
 
     update_text(base, shoulder, elbow, gripper, programming_mode, status, screen, font, font_small)
 
@@ -374,6 +385,10 @@ def main():
                 update_text(base, shoulder, elbow, gripper, programming_mode, status, screen, font, font_small)
 
             motor_time = current_time
+
+        if programming_mode and (current_time - blink_time) > INTERVAL_BLINK:
+            update_text(base, shoulder, elbow, gripper, programming_mode, status, screen, font, font_small)
+            blink_time = current_time
 
         clock.tick(60)
 
