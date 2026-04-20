@@ -38,20 +38,20 @@ from adafruit_motor import stepper as stepper_mod
 from adafruit_motorkit import MotorKit
 
 #################################################################################################################
-HAT_ADDRESS = 0x6F
-I2C_BUS = 1
-STEPS_PER_REV = 200
-KEYBOARD_RPM = 30.0
-MIN_JOYSTICK_RPM = 5.0
-MAX_JOYSTICK_RPM = 90.0
-JOYTHRESH = 0.10
+HAT_ADDRESS        = 0x6F
+I2C_BUS            = 1
+STEPS_PER_REV      = 200
+KEYBOARD_RPM       = 30.0
+MIN_JOYSTICK_RPM   = 5.0
+MAX_JOYSTICK_RPM   = 90.0
+JOYTHRESH          = 0.10
 INTERVAL_USERINPUT = 0.03
-WINDOW_SIZE = (520, 360)
-STEPPER_STYLE = "INTERLEAVE"
-STYLE_STEP_FACTOR = 2.0
+WINDOW_SIZE        = (520, 360)
+STEPPER_STYLE      = "INTERLEAVE"
+STYLE_STEP_FACTOR  = 2.0
 MAX_STEPS_PER_TICK = 8
-LEFT_Y_AXIS = 1
-RIGHT_Y_AXIS = 4
+LEFT_Y_AXIS        = 1
+RIGHT_Y_AXIS       = 4
 #################################################################################################################
 
 
