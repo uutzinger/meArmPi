@@ -49,9 +49,10 @@ MODE_IDLE    = "IDLE"
 
 SERVO_STEP         = 5.0
 
-STEPPER_RPM        = 120.0
+STEPPER_RPM        = 180.0
 MIN_STEPPER_RPM    = 5.0
-MAX_STEPPER_RPM    = 150
+MAX_STEPPER_RPM    = 240.0
+STEPPER_ACCEL_RPM_PER_SEC = 240.0
 STEPS_PER_REV      = 200
 STEPPER_STYLE      = "SINGLE"    # "SINGLE", "DOUBLE", "INTERLEAVE", or "MICROSTEP"
 STYLE_STEP_FACTOR  = 1.0    # 1.0 for SINGLE/DOUBLE, 2.0 for INTERLEAVE, 16.0 for MICROSTEP (assuming 16 microsteps per full step)
@@ -278,21 +279,41 @@ def rpm_to_interval(rpm):
     return 60.0 / (STEPS_PER_REV * STYLE_STEP_FACTOR * rpm)
 
 
+def ramp_rpm(current_rpm, target_rpm, elapsed):
+    """Move the current RPM toward the target RPM using the configured acceleration."""
+    max_delta = STEPPER_ACCEL_RPM_PER_SEC * elapsed
+    delta = target_rpm - current_rpm
+    if abs(delta) <= max_delta:
+        return target_rpm
+    if delta > 0.0:
+        return current_rpm + max_delta
+    return current_rpm - max_delta
+
+
 def service_stepper(stepper_motor, command_rpm, state, current_time):
     """Advance a stepper based on the commanded RPM."""
-    state["command_rpm"] = command_rpm
+    target_rpm = clamp(command_rpm, -MAX_STEPPER_RPM, MAX_STEPPER_RPM)
+    state["target_rpm"] = target_rpm
 
-    if command_rpm == 0.0:
+    ramp_elapsed = current_time - state["last_ramp_time"]
+    previous_rpm = state["current_rpm"]
+    current_rpm = ramp_rpm(previous_rpm, target_rpm, ramp_elapsed)
+    state["current_rpm"] = current_rpm
+    state["command_rpm"] = current_rpm
+    state["last_ramp_time"] = current_time
+    speed_changed = current_rpm != previous_rpm
+
+    if current_rpm == 0.0:
         state["last_step_time"] = current_time
-        return False
+        return speed_changed
 
-    direction = stepper_mod.FORWARD if command_rpm > 0.0 else stepper_mod.BACKWARD
-    rpm = clamp(abs(command_rpm), MIN_STEPPER_RPM, MAX_STEPPER_RPM)
+    direction = stepper_mod.FORWARD if current_rpm > 0.0 else stepper_mod.BACKWARD
+    rpm = clamp(abs(current_rpm), MIN_STEPPER_RPM, MAX_STEPPER_RPM)
     interval = rpm_to_interval(rpm)
     elapsed = current_time - state["last_step_time"]
 
     if elapsed < interval:
-        return False
+        return speed_changed
 
     steps_due = clamp(int(elapsed / interval), 1, MAX_STEPS_PER_TICK)
     delta = 1 if direction == stepper_mod.FORWARD else -1
@@ -432,6 +453,9 @@ def exit_stepper_mode(state, logger):
     state["kit"] = None
     state["stepper"] = None
     state["stepper_state"]["command_rpm"] = 0.0
+    state["stepper_state"]["target_rpm"] = 0.0
+    state["stepper_state"]["current_rpm"] = 0.0
+    state["stepper_state"]["last_ramp_time"] = time.time()
     logger.info("Exited stepper mode")
 
 
@@ -446,8 +470,12 @@ def enter_stepper_mode(state, logger):
     kit = MotorKit(i2c=board.I2C(), address=HAT_ADDRESS)
     state["kit"] = kit
     state["stepper"] = kit.stepper2
-    state["stepper_state"]["last_step_time"] = time.time()
+    current_time = time.time()
+    state["stepper_state"]["last_step_time"] = current_time
+    state["stepper_state"]["last_ramp_time"] = current_time
     state["stepper_state"]["command_rpm"] = 0.0
+    state["stepper_state"]["target_rpm"] = 0.0
+    state["stepper_state"]["current_rpm"] = 0.0
     state["mode"] = MODE_STEPPER
     state["programming_mode"] = False
     state["status"] = "Stepper mode: hold L1/R1 for M3/M4 stepper"
@@ -513,7 +541,8 @@ def update_text(state, screen, font, font_small):
     )
     servo_2 = font_small.render(f"Servo gripper: {state['gripper']:.0f}", True, (0, 0, 0))
     stepper_1 = font_small.render(
-        f"M3/M4 stepper: {state['stepper_state']['position_steps']:7d} steps  {state['stepper_state']['command_rpm']:6.1f} rpm",
+        f"M3/M4 stepper: {state['stepper_state']['position_steps']:7d} steps  "
+        f"{state['stepper_state']['current_rpm']:6.1f}/{state['stepper_state']['target_rpm']:6.1f} rpm",
         True,
         (0, 0, 0),
     )
@@ -527,7 +556,7 @@ def update_text(state, screen, font, font_small):
         "Servo mode: arrows base/shoulder, W/S elbow, A/D gripper",
         "Servo joystick: axis 0/1/4 joints, triggers or D-pad L/R gripper",
         "Waypoints: Square/X/Circle/Triangle; left center program, right center run",
-        "Stepper mode: hold R1 forward, L1 backward on M3/M4",
+        "Stepper mode: hold R1 forward, L1 backward on M3/M4; rpm shown actual/target",
         "Mode switch releases inactive outputs before changing PCA9685 ownership",
     ]
     for index, line in enumerate(help_lines):
@@ -556,7 +585,10 @@ def create_state(logger):
         "stepper_state": {
             "position_steps": 0,
             "command_rpm": 0.0,
+            "target_rpm": 0.0,
+            "current_rpm": 0.0,
             "last_step_time": current_time,
+            "last_ramp_time": current_time,
         },
     }
 
