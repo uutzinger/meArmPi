@@ -1,5 +1,24 @@
 `Controller-Direct.py` implementation status
 
+Utilized controls
+
+Keyboard:
+- `Left Arrow`: decrease base angle.
+- `Right Arrow`: increase base angle.
+- `Up Arrow`: increase shoulder angle.
+- `Down Arrow`: decrease shoulder angle.
+- `W`: increase elbow angle.
+- `S`: decrease elbow angle.
+- `A`: decrease gripper angle.
+- `D`: increase gripper angle.
+
+Joystick:
+- `axis 0`: base angle.
+- `axis 1`: shoulder angle.
+- `axis 4`: elbow angle.
+- `axis 2`: left trigger contribution to gripper opening.
+- `axis 5`: right trigger contribution to gripper closing.
+
 Completed
 
 0. Preserve backward compatibility in `meArm.py`.
