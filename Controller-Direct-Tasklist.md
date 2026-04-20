@@ -18,6 +18,13 @@ Joystick:
 - `axis 4`: elbow angle.
 - `axis 2`: left trigger contribution to gripper opening.
 - `axis 5`: right trigger contribution to gripper closing.
+- `hat 0 left/right`: decrease/increase gripper angle.
+- `Square`: move to or program the square waypoint.
+- `X`: move to or program the X waypoint.
+- `Circle`: move to or program the circle waypoint.
+- `Triangle`: move to or program the triangle waypoint.
+- `left center/share/select`: enter waypoint programming mode.
+- `right center/options/start`: exit waypoint programming mode and return to run mode.
 
 Completed
 
@@ -57,15 +64,17 @@ Completed
    `axis 1` -> shoulder
    `axis 4` -> elbow
    `axes 2/5` triggers -> gripper
+   `hat 0 left/right` -> gripper decrease/increase
 
 6. Remove inverse-kinematics and Cartesian move calls from the controller path.
    Status: completed
    `Controller-Direct.py` no longer uses `move_to(x, y, z)` for normal motion.
    It now sends desired joint/device angles to `meArm`, and `meArm` performs zero-offset conversion and clamping.
 
-7. Remove gamepad button and hat logic for now.
+7. Remove gamepad button and old hat motion logic.
    Status: completed
-   `JOYBUTTON`, `JOYHAT`, attack/defend logic, and timed reverse-move sequences were removed from `Controller-Direct.py`.
+   `JOYBUTTON`, old `JOYHAT`, attack/defend logic, and timed reverse-move sequences were removed from `Controller-Direct.py`.
+   A new direct `hat 0` polling path now uses D-pad left/right for gradual gripper control.
 
 8. Update the UI/status text.
    Status: completed
@@ -82,6 +91,14 @@ Completed
    Status: completed
    `python3 -m py_compile Controller-Direct.py meArm.py` passed.
    Remaining work: live motion test on the arm.
+
+11. Add direct-controller waypoints.
+   Status: completed
+   `controller_direct_waypoints.json` stores four direct-angle waypoints: `square`, `x`, `circle`, and `triangle`.
+   In run mode, pressing a face button loads its saved `base`, `shoulder`, `elbow`, and `gripper` angles.
+   In programming mode, pressing a face button saves the current `base`, `shoulder`, `elbow`, and `gripper` angles to that waypoint.
+   The left center/share/select button enters programming mode.
+   The right center/options/start button exits programming mode.
 
 Notes
 
