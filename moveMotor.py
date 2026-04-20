@@ -7,16 +7,17 @@ approximate pulse width that should correspond to a servo position.
 
 Examples:
     python3 moveMotor.py 1 2200
-    python3 moveMotor.py 14 1500 --address 0x6F
+    python3 moveMotor.py 14 1500 --address 0x70
 """
 
 import argparse
+import sys
 
 import board
 from adafruit_pca9685 import PCA9685
 
 SERVO_CHANNELS = (0, 1, 14, 15)
-DEFAULT_ADDRESS = 0x70
+DEFAULT_ADDRESS = 0x6F
 DEFAULT_FREQUENCY = 50
 MIN_PULSE_US = 500
 MAX_PULSE_US = 2500
@@ -68,7 +69,7 @@ def parse_args():
         "--address",
         type=lambda value: int(value, 0),
         default=DEFAULT_ADDRESS,
-        help="I2C address of the PCA9685 board. Default: 0x70.",
+        help="I2C address of the PCA9685 board. Default: 0x6F.",
     )
     parser.add_argument(
         "--frequency",
@@ -83,7 +84,13 @@ def main():
     args = parse_args()
 
     i2c = board.I2C()
-    pca = PCA9685(i2c, address=args.address)
+    try:
+        pca = PCA9685(i2c, address=args.address)
+    except ValueError as exc:
+        print(f"Error: PCA9685 was not found at I2C address 0x{args.address:02X}.", file=sys.stderr)
+        print("Check power/wiring, run `i2cdetect -y 1`, or pass the detected address with `--address`.", file=sys.stderr)
+        raise SystemExit(1) from exc
+
     pca.frequency = args.frequency
 
     try:
