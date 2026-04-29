@@ -307,6 +307,9 @@ def service_stepper(stepper_motor, command_rpm, state, current_time):
     speed_changed = current_rpm != previous_rpm
 
     if current_rpm == 0.0:
+        if state["energized"]:
+            release_stepper(stepper_motor)
+            state["energized"] = False
         state["last_step_time"] = current_time
         return speed_changed
 
@@ -325,6 +328,8 @@ def service_stepper(stepper_motor, command_rpm, state, current_time):
         step_once(stepper_motor, direction)
         state["position_steps"] += delta
         state["last_step_time"] += interval
+
+    state["energized"] = True
 
     if current_time - state["last_step_time"] > interval:
         state["last_step_time"] = current_time
@@ -406,6 +411,13 @@ def deinit_motorkit(kit):
         deinit()
 
 
+def deinit_i2c(i2c):
+    """Release the shared I2C bus when the platform exposes a deinit hook."""
+    deinit = getattr(i2c, "deinit", None)
+    if deinit is not None:
+        deinit()
+
+
 def exit_servo_mode(state, logger):
     """Save servo state, release PWM outputs, and close the servo driver."""
     arm = state["arm"]
@@ -428,7 +440,7 @@ def enter_servo_mode(state, logger):
         exit_stepper_mode(state, logger)
 
     home_on_start = not state["servo_started"]
-    arm = meArm.meArm(address=HAT_ADDRESS, logger=logger, home_on_start=home_on_start)
+    arm = meArm.meArm(i2c=state["i2c"], address=HAT_ADDRESS, logger=logger, home_on_start=home_on_start)
     state["arm"] = arm
     state["servo_started"] = True
 
@@ -458,6 +470,7 @@ def exit_stepper_mode(state, logger):
     state["stepper_state"]["command_rpm"] = 0.0
     state["stepper_state"]["target_rpm"] = 0.0
     state["stepper_state"]["current_rpm"] = 0.0
+    state["stepper_state"]["energized"] = False
     state["stepper_state"]["last_ramp_time"] = time.time()
     logger.info("Exited stepper mode")
 
@@ -470,7 +483,7 @@ def enter_stepper_mode(state, logger):
     if state["mode"] == MODE_SERVO:
         exit_servo_mode(state, logger)
 
-    kit = MotorKit(i2c=board.I2C(), address=HAT_ADDRESS)
+    kit = MotorKit(i2c=state["i2c"], address=HAT_ADDRESS)
     state["kit"] = kit
     state["stepper"] = kit.stepper2
     current_time = time.time()
@@ -479,6 +492,7 @@ def enter_stepper_mode(state, logger):
     state["stepper_state"]["command_rpm"] = 0.0
     state["stepper_state"]["target_rpm"] = 0.0
     state["stepper_state"]["current_rpm"] = 0.0
+    state["stepper_state"]["energized"] = False
     state["mode"] = MODE_STEPPER
     state["programming_mode"] = False
     state["status"] = "Stepper mode: hold L1/R1 for M3/M4 stepper"
@@ -505,6 +519,7 @@ def shutdown_hardware(state, logger):
     elif state["mode"] == MODE_STEPPER:
         exit_stepper_mode(state, logger)
     state["mode"] = MODE_IDLE
+    deinit_i2c(state["i2c"])
 
 
 def update_text(state, screen, font, font_small):
@@ -573,6 +588,7 @@ def create_state(logger):
     """Build mutable combined-controller state."""
     current_time = time.time()
     return {
+        "i2c": board.I2C(),
         "mode": MODE_IDLE,
         "arm": None,
         "kit": None,
@@ -590,6 +606,7 @@ def create_state(logger):
             "command_rpm": 0.0,
             "target_rpm": 0.0,
             "current_rpm": 0.0,
+            "energized": False,
             "last_step_time": current_time,
             "last_ramp_time": current_time,
         },
