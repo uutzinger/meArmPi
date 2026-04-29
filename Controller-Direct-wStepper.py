@@ -67,10 +67,10 @@ WINDOW_SIZE = (540, 420)
 
 WAYPOINT_FILE = Path(__file__).with_name("controller_direct_waypoints.json")
 WAYPOINT_BUTTONS = {
-    2: "square",
+    3: "square",
     0: "x",
     1: "circle",
-    3: "triangle",
+    2: "triangle",
 }
 PROGRAM_BUTTONS = {8, 6}    # share/select on common PlayStation/generic mappings
 RUN_BUTTONS = {9, 7}        # options/start on common PlayStation/generic mappings
