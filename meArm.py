@@ -122,6 +122,7 @@ class meArm:
         self,
         i2c=None,
         address: int = 0x40,
+        pca=None,
         config_file: str = DEFAULT_CONFIG,
         logger: logging.Logger = default_logger,
         home_on_start: bool = True,
@@ -131,8 +132,10 @@ class meArm:
         self._load_config()
 
         # Initialize PCA9685
+        self._owns_i2c = i2c is None
+        self._owns_pca = pca is None
         self.i2c = i2c or board.I2C()
-        self.pca = PCA9685(self.i2c, address=address)
+        self.pca = pca or PCA9685(self.i2c, address=address)
         self.pca.frequency = 50
 
         # Setup servos with calibration and limits
@@ -338,11 +341,16 @@ class meArm:
         self.logger.info("Servo PWM outputs released")
 
     def deinit(self) -> None:
-        """Release servo outputs and deinitialize the PCA9685 object when supported."""
+        """Release servo outputs and deinitialize only hardware owned by this instance."""
         self.release_servos()
-        deinit = getattr(self.pca, "deinit", None)
-        if deinit is not None:
-            deinit()
+        if self._owns_pca:
+            deinit = getattr(self.pca, "deinit", None)
+            if deinit is not None:
+                deinit()
+        if self._owns_i2c:
+            deinit_i2c = getattr(self.i2c, "deinit", None)
+            if deinit_i2c is not None:
+                deinit_i2c()
 
     def move_to(self, x: float, y: float, z: float) -> bool:
         """

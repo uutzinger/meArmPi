@@ -36,8 +36,8 @@ import time
 
 import board
 import pygame
+from adafruit_pca9685 import PCA9685
 from adafruit_motor import stepper as stepper_mod
-from adafruit_motorkit import MotorKit
 
 import meArm
 
@@ -56,14 +56,19 @@ STEPPER_ACCEL_RPM_PER_SEC = 240.0
 STEPPER_DECEL_RPM_PER_SEC = 1200.0
 STEPS_PER_REV      = 200
 STEPPER_STYLE      = "SINGLE"    # "SINGLE", "DOUBLE", "INTERLEAVE", or "MICROSTEP"
-STYLE_STEP_FACTOR  = 1.0    # 1.0 for SINGLE/DOUBLE, 2.0 for INTERLEAVE, 16.0 for MICROSTEP (assuming 16 microsteps per full step)
+STYLE_STEP_FACTOR  = 1.0         # 1.0 for SINGLE/DOUBLE, 2.0 for INTERLEAVE, 16.0 for MICROSTEP (assuming 16 microsteps per full step)
 MAX_STEPS_PER_TICK = 12
 
 INTERVAL_USERINPUT = 0.03
-INTERVAL_MOTOR = 0.01
-INTERVAL_BLINK = 0.35
-JOYTHRESH = 0.01
-WINDOW_SIZE = (540, 420)
+INTERVAL_MOTOR     = 0.01
+INTERVAL_BLINK     = 0.35
+JOYTHRESH          = 0.01
+MODE_SWITCH_COOLDOWN = 0.2
+PCA_SETTLE_DELAY   = 0.02
+
+WINDOW_SIZE        = (540, 420)
+SERVO_PWM_FREQUENCY = 50
+STEPPER_PWM_FREQUENCY = 1600
 
 WAYPOINT_FILE = Path(__file__).with_name("controller_direct_waypoints.json")
 WAYPOINT_BUTTONS = {
@@ -76,7 +81,71 @@ PROGRAM_BUTTONS = {8, 6}    # share/select on common PlayStation/generic mapping
 RUN_BUTTONS = {9, 7}        # options/start on common PlayStation/generic mappings
 L1_BUTTONS = {4}
 R1_BUTTONS = {5}
+
+STEPPER2_ENABLE_CHANNELS = (2, 7)
+STEPPER2_COIL_CHANNELS = (4, 3, 5, 6)
+STEPPER_SEQUENCE_SINGLE = (
+    (1, 0, 0, 0),
+    (0, 0, 1, 0),
+    (0, 1, 0, 0),
+    (0, 0, 0, 1),
+)
+STEPPER_SEQUENCE_DOUBLE = (
+    (1, 0, 1, 0),
+    (0, 1, 1, 0),
+    (0, 1, 0, 1),
+    (1, 0, 0, 1),
+)
+STEPPER_SEQUENCE_INTERLEAVE = (
+    (1, 0, 0, 0),
+    (1, 0, 1, 0),
+    (0, 0, 1, 0),
+    (0, 1, 1, 0),
+    (0, 1, 0, 0),
+    (0, 1, 0, 1),
+    (0, 0, 0, 1),
+    (1, 0, 0, 1),
+)
 #################################################################################################################
+
+
+class HatStepper:
+    """Minimal M3/M4 stepper wrapper on a shared PCA9685."""
+
+    def __init__(self, pca, enable_channels, coil_channels):
+        self.pca = pca
+        self.enable_channels = enable_channels
+        self.coils = [self.pca.channels[channel] for channel in coil_channels]
+        self.step_index = 0
+        self._set_enabled(False)
+        self.release()
+
+    def _set_enabled(self, enabled):
+        duty_cycle = 0xFFFF if enabled else 0
+        for channel in self.enable_channels:
+            self.pca.channels[channel].duty_cycle = duty_cycle
+
+    def _sequence(self, style):
+        if style == stepper_mod.SINGLE:
+            return STEPPER_SEQUENCE_SINGLE
+        if style == stepper_mod.DOUBLE:
+            return STEPPER_SEQUENCE_DOUBLE
+        if style == stepper_mod.INTERLEAVE:
+            return STEPPER_SEQUENCE_INTERLEAVE
+        raise AttributeError(f"Unsupported step style: {STEPPER_STYLE}")
+
+    def onestep(self, *, direction=stepper_mod.FORWARD, style=stepper_mod.SINGLE):
+        sequence = self._sequence(style)
+        delta = 1 if direction == stepper_mod.FORWARD else -1
+        self.step_index = (self.step_index + delta) % len(sequence)
+        self._set_enabled(True)
+        for coil, value in zip(self.coils, sequence[self.step_index]):
+            coil.duty_cycle = 0xFFFF if value else 0
+
+    def release(self):
+        for coil in self.coils:
+            coil.duty_cycle = 0
+        self._set_enabled(False)
 
 
 def clamp(value, min_val, max_val):
@@ -403,9 +472,14 @@ def release_stepper(stepper_motor):
         stepper_motor.release()
 
 
-def deinit_motorkit(kit):
-    """Release the MotorKit PCA object if the library exposes it."""
-    pca = getattr(kit, "_pca", None)
+def set_pca_frequency(pca, frequency_hz):
+    """Retune the shared PCA9685 and allow the outputs to settle."""
+    pca.frequency = frequency_hz
+    time.sleep(PCA_SETTLE_DELAY)
+
+
+def deinit_pca(pca):
+    """Release the shared PCA object when the platform exposes a deinit hook."""
     deinit = getattr(pca, "deinit", None)
     if deinit is not None:
         deinit()
@@ -419,7 +493,7 @@ def deinit_i2c(i2c):
 
 
 def exit_servo_mode(state, logger):
-    """Save servo state, release PWM outputs, and close the servo driver."""
+    """Save servo state and release PWM outputs."""
     arm = state["arm"]
     if arm is None:
         return
@@ -436,11 +510,15 @@ def enter_servo_mode(state, logger):
     if state["mode"] == MODE_SERVO:
         return
 
-    if state["mode"] == MODE_STEPPER:
-        exit_stepper_mode(state, logger)
-
+    set_pca_frequency(state["pca"], SERVO_PWM_FREQUENCY)
     home_on_start = not state["servo_started"]
-    arm = meArm.meArm(i2c=state["i2c"], address=HAT_ADDRESS, logger=logger, home_on_start=home_on_start)
+    arm = meArm.meArm(
+        i2c=state["i2c"],
+        pca=state["pca"],
+        address=HAT_ADDRESS,
+        logger=logger,
+        home_on_start=home_on_start,
+    )
     state["arm"] = arm
     state["servo_started"] = True
 
@@ -456,16 +534,15 @@ def enter_servo_mode(state, logger):
         state["gripper"] = arm.set_gripper_angle(state["gripper"])
 
     state["mode"] = MODE_SERVO
+    state["pending_mode"] = None
+    state["last_mode_switch_time"] = time.time()
     state["status"] = "Servo mode: direct arm control active"
     logger.info("Entered servo mode")
 
 
 def exit_stepper_mode(state, logger):
-    """Release the M3/M4 stepper and close the stepper driver."""
+    """Release the M3/M4 stepper."""
     release_stepper(state["stepper"])
-    if state["kit"] is not None:
-        deinit_motorkit(state["kit"])
-    state["kit"] = None
     state["stepper"] = None
     state["stepper_state"]["command_rpm"] = 0.0
     state["stepper_state"]["target_rpm"] = 0.0
@@ -476,16 +553,12 @@ def exit_stepper_mode(state, logger):
 
 
 def enter_stepper_mode(state, logger):
-    """Release servo outputs, initialize MotorKit, and use M3/M4 as stepper2."""
+    """Release servo outputs and initialize the shared-PCA M3/M4 stepper."""
     if state["mode"] == MODE_STEPPER:
         return
 
-    if state["mode"] == MODE_SERVO:
-        exit_servo_mode(state, logger)
-
-    kit = MotorKit(i2c=state["i2c"], address=HAT_ADDRESS)
-    state["kit"] = kit
-    state["stepper"] = kit.stepper2
+    set_pca_frequency(state["pca"], STEPPER_PWM_FREQUENCY)
+    state["stepper"] = HatStepper(state["pca"], STEPPER2_ENABLE_CHANNELS, STEPPER2_COIL_CHANNELS)
     current_time = time.time()
     state["stepper_state"]["last_step_time"] = current_time
     state["stepper_state"]["last_ramp_time"] = current_time
@@ -494,6 +567,8 @@ def enter_stepper_mode(state, logger):
     state["stepper_state"]["current_rpm"] = 0.0
     state["stepper_state"]["energized"] = False
     state["mode"] = MODE_STEPPER
+    state["pending_mode"] = None
+    state["last_mode_switch_time"] = current_time
     state["programming_mode"] = False
     state["status"] = "Stepper mode: hold L1/R1 for M3/M4 stepper"
     logger.info("Entered stepper mode")
@@ -507,6 +582,8 @@ def enter_idle_mode(state, logger):
         exit_stepper_mode(state, logger)
 
     state["mode"] = MODE_IDLE
+    state["pending_mode"] = None
+    state["last_mode_switch_time"] = time.time()
     state["programming_mode"] = False
     state["status"] = "Idle mode: outputs released"
     logger.info("Entered idle mode")
@@ -519,6 +596,7 @@ def shutdown_hardware(state, logger):
     elif state["mode"] == MODE_STEPPER:
         exit_stepper_mode(state, logger)
     state["mode"] = MODE_IDLE
+    deinit_pca(state["pca"])
     deinit_i2c(state["i2c"])
 
 
@@ -569,13 +647,13 @@ def update_text(state, screen, font, font_small):
     screen.blit(stepper_1, (10, 132))
 
     help_lines = [
-        "Auto modes: servo controls enter SERVO, L1/R1 enter STEPPER",
-        "Fallback modes: 1=servo  2=stepper  0=idle/release",
-        "Servo mode: arrows base/shoulder, W/S elbow, A/D gripper",
+        "Modes: Auto or 1=servo  2=stepper  0=idle/release",
+        "Servo keys:     arrows base/shoulder, W/S elbow, A/D gripper",
         "Servo joystick: axis 0/1/4 joints, triggers or D-pad L/R gripper",
+        "Stepper:        hold R1 forward, L1 backward on M3/M4; rpm shown actual/target",
+        f"PWM freq:       servo {SERVO_PWM_FREQUENCY} Hz, stepper {STEPPER_PWM_FREQUENCY} Hz",
+        "Mode switch:    200 ms lockout; stepper must ramp down before servo/idle",
         "Waypoints: Square/X/Circle/Triangle; left center program, right center run",
-        "Stepper mode: hold R1 forward, L1 backward on M3/M4; rpm shown actual/target",
-        "Mode switch releases inactive outputs before changing PCA9685 ownership",
     ]
     for index, line in enumerate(help_lines):
         rendered = font_small.render(line, True, (0, 0, 0))
@@ -587,13 +665,19 @@ def update_text(state, screen, font, font_small):
 def create_state(logger):
     """Build mutable combined-controller state."""
     current_time = time.time()
+    i2c = board.I2C()
+    pca = PCA9685(i2c, address=HAT_ADDRESS)
+    pca.frequency = SERVO_PWM_FREQUENCY
     return {
-        "i2c": board.I2C(),
+        "i2c": i2c,
+        "pca": pca,
         "mode": MODE_IDLE,
         "arm": None,
-        "kit": None,
         "stepper": None,
         "servo_started": False,
+        "pending_mode": None,
+        "pending_servo_button": None,
+        "last_mode_switch_time": 0.0,
         "base": 0.0,
         "shoulder": 0.0,
         "elbow": 0.0,
@@ -613,27 +697,74 @@ def create_state(logger):
     }
 
 
+def request_mode(target_mode, state, logger):
+    """Queue a mode transition, respecting cooldown and stepper ramp-down."""
+    if target_mode == state["mode"] and state["pending_mode"] is None:
+        return False
+
+    if target_mode == state["pending_mode"]:
+        return False
+
+    state["pending_mode"] = target_mode
+    if state["mode"] == MODE_STEPPER and target_mode != MODE_STEPPER:
+        state["status"] = f"Stepper mode: decelerating to enter {target_mode.lower()}"
+    else:
+        state["status"] = f"Requested {target_mode.lower()} mode"
+    logger.info("Requested mode change to %s", target_mode)
+    return True
+
+
+def perform_mode_switch(target_mode, state, logger):
+    """Switch modes immediately after teardown of the current owner."""
+    if state["mode"] == MODE_SERVO:
+        exit_servo_mode(state, logger)
+    elif state["mode"] == MODE_STEPPER:
+        exit_stepper_mode(state, logger)
+
+    if target_mode == MODE_SERVO:
+        enter_servo_mode(state, logger)
+    elif target_mode == MODE_STEPPER:
+        enter_stepper_mode(state, logger)
+    else:
+        enter_idle_mode(state, logger)
+
+
+def process_pending_mode(state, current_time, logger):
+    """Complete queued mode changes once cooldown and ramp-down constraints allow it."""
+    target_mode = state["pending_mode"]
+    if target_mode is None:
+        return False
+
+    if (current_time - state["last_mode_switch_time"]) < MODE_SWITCH_COOLDOWN:
+        return False
+
+    if state["mode"] == MODE_STEPPER and target_mode != MODE_STEPPER:
+        if state["stepper_state"]["current_rpm"] != 0.0:
+            state["status"] = f"Stepper mode: decelerating to enter {target_mode.lower()}"
+            return False
+
+    perform_mode_switch(target_mode, state, logger)
+    return True
+
+
 def handle_mode_key(event, state, logger):
     """Handle keyboard mode switches."""
     if event.key == pygame.K_1:
-        enter_servo_mode(state, logger)
-        return True
+        return request_mode(MODE_SERVO, state, logger)
     if event.key == pygame.K_2:
-        enter_stepper_mode(state, logger)
-        return True
+        return request_mode(MODE_STEPPER, state, logger)
     if event.key == pygame.K_0:
-        enter_idle_mode(state, logger)
-        return True
+        return request_mode(MODE_IDLE, state, logger)
     return False
 
 
-def handle_servo_button(event, state, logger):
+def handle_servo_button(button, state, logger):
     """Handle servo-mode gamepad button functions."""
-    if event.button in PROGRAM_BUTTONS:
+    if button in PROGRAM_BUTTONS:
         state["programming_mode"] = True
         state["status"] = "Programming: press waypoint button to save"
         return True
-    if event.button in RUN_BUTTONS:
+    if button in RUN_BUTTONS:
         state["programming_mode"] = False
         state["status"] = "Run mode: press waypoint button to move"
         return True
@@ -645,7 +776,7 @@ def handle_servo_button(event, state, logger):
         state["gripper"],
         waypoint_status,
     ) = handle_waypoint_button(
-        event.button,
+        button,
         state["base"],
         state["shoulder"],
         state["elbow"],
@@ -667,13 +798,11 @@ def handle_automatic_joystick_mode(joystick, joy, state, logger):
 
     if stepper_joystick_command(joystick) != 0.0:
         if state["mode"] != MODE_STEPPER:
-            enter_stepper_mode(state, logger)
-            return True
+            return request_mode(MODE_STEPPER, state, logger)
         return False
 
     if state["mode"] != MODE_SERVO and servo_joystick_requested(joystick):
-        enter_servo_mode(state, logger)
-        return True
+        return request_mode(MODE_SERVO, state, logger)
 
     return False
 
@@ -733,6 +862,9 @@ def service_stepper_mode(state, joystick, joy, current_time):
     if joy and command_rpm == 0.0:
         command_rpm = stepper_joystick_command(joystick)
 
+    if state["pending_mode"] in {MODE_SERVO, MODE_IDLE}:
+        command_rpm = 0.0
+
     previous_rpm = state["stepper_state"]["command_rpm"]
     changed = False
     if state["stepper"] is not None:
@@ -785,13 +917,21 @@ def main():
                         redraw = True
                 elif event.type == pygame.JOYBUTTONDOWN:
                     if is_stepper_button(event.button):
-                        enter_stepper_mode(state, logger)
-                        redraw = True
+                        redraw = request_mode(MODE_STEPPER, state, logger) or redraw
                     elif is_servo_button(event.button):
+                        state["pending_servo_button"] = event.button
                         if state["mode"] != MODE_SERVO:
-                            enter_servo_mode(state, logger)
-                        if handle_servo_button(event, state, logger):
+                            redraw = request_mode(MODE_SERVO, state, logger) or redraw
+                        else:
                             redraw = True
+
+            if process_pending_mode(state, current_time, logger):
+                redraw = True
+
+            if state["mode"] == MODE_SERVO and state["pending_servo_button"] is not None:
+                if handle_servo_button(state["pending_servo_button"], state, logger):
+                    redraw = True
+                state["pending_servo_button"] = None
 
             if handle_automatic_joystick_mode(joystick, joy, state, logger):
                 redraw = True
