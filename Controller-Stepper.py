@@ -46,6 +46,7 @@ MIN_JOYSTICK_RPM   = 5.0
 MAX_JOYSTICK_RPM   = 90.0
 STEPPER_ACCEL_RPM_PER_SEC = 240.0
 STEPPER_DECEL_RPM_PER_SEC = 1200.0
+ZERO_COMMAND_HOLD_SEC = 0.15
 JOYTHRESH          = 0.10
 INTERVAL_USERINPUT = 0.03
 WINDOW_SIZE        = (520, 360)
@@ -150,7 +151,14 @@ def ramp_rpm(current_rpm, target_rpm, elapsed):
 
 def service_stepper(stepper_motor, command_rpm, state, current_time):
     """Advance a stepper based on the commanded RPM."""
-    target_rpm = clamp(command_rpm, -MAX_JOYSTICK_RPM, MAX_JOYSTICK_RPM)
+    raw_target_rpm = clamp(command_rpm, -MAX_JOYSTICK_RPM, MAX_JOYSTICK_RPM)
+    if raw_target_rpm != 0.0:
+        state["last_nonzero_command_time"] = current_time
+        target_rpm = raw_target_rpm
+    elif (current_time - state["last_nonzero_command_time"]) < ZERO_COMMAND_HOLD_SEC:
+        target_rpm = state["target_rpm"]
+    else:
+        target_rpm = 0.0
     state["target_rpm"] = target_rpm
 
     ramp_elapsed = current_time - state["last_ramp_time"]
@@ -218,7 +226,7 @@ def update_text(stepper_1_state, stepper_2_state, joystick_state, screen, font, 
     )
     help_6 = font_small.render(
         f"Joystick speed: {MIN_JOYSTICK_RPM:.0f}-{MAX_JOYSTICK_RPM:.0f} rpm  accel/decel: "
-        f"{STEPPER_ACCEL_RPM_PER_SEC:.0f}/{STEPPER_DECEL_RPM_PER_SEC:.0f}",
+        f"{STEPPER_ACCEL_RPM_PER_SEC:.0f}/{STEPPER_DECEL_RPM_PER_SEC:.0f}  hold: {ZERO_COMMAND_HOLD_SEC:.2f}s",
         True,
         (0, 0, 0),
     )
@@ -278,6 +286,7 @@ def main():
         "energized": False,
         "last_step_time": current_time,
         "last_ramp_time": current_time,
+        "last_nonzero_command_time": current_time,
     }
     stepper_2_state = {
         "position_steps": 0,
@@ -287,6 +296,7 @@ def main():
         "energized": False,
         "last_step_time": current_time,
         "last_ramp_time": current_time,
+        "last_nonzero_command_time": current_time,
     }
     joystick_state = {"motor_1_rpm": 0.0, "motor_2_rpm": 0.0, "left_y": 0.0, "right_y": 0.0}
 
