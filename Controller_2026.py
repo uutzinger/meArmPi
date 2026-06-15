@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #################################################################################################################
-# meArm Direct Controller
-# Uses keyboard or gamepad to control meArm joint angles directly without inverse kinematics.
+# meArm Cartesian Controller
+# Uses keyboard or gamepad to control the meArm end effector with inverse kinematics.
 #################################################################################################################
 
 # ##############################################################################
@@ -40,23 +40,27 @@ import meArm
 
 #################################################################################################################
 HAT_ADDRESS = 0x6F
-SERVO_STEP = 5.0             # degrees per keyboard/user-input step
+CARTESIAN_STEP = 5.0        # millimeters per keyboard/user-input step
+GRIPPER_STEP = 5.0          # percentage points per keyboard/user-input step
 
-INTERVAL_USERINPUT = 0.03    # seconds
-INTERVAL_MOTOR = 0.01        # seconds
-INTERVAL_BLINK = 0.35        # seconds
-JOYTHRESH = 0.01             # minimum stick movement to register
+INTERVAL_USERINPUT = 0.03   # seconds
+INTERVAL_MOTOR = 0.01       # seconds
+INTERVAL_BLINK = 0.35       # seconds
+JOYTHRESH = 0.01            # minimum stick movement to register
 
-WINDOW_SIZE = (540, 360)     # pixels
-WAYPOINT_FILE = Path(__file__).with_name("controller_direct_waypoints.json")
+WINDOW_SIZE = (540, 380)    # pixels
+WAYPOINT_FILE = Path(__file__).with_name("controller_waypoints.json")
 WAYPOINT_BUTTONS = {
     3: "square",
     0: "x",
     1: "circle",
     2: "triangle",
 }
-PROGRAM_BUTTONS = {8, 6}     # share/select on common PlayStation/generic mappings
-RUN_BUTTONS = {9, 7}         # options/start on common PlayStation/generic mappings
+PROGRAM_BUTTONS = {8, 6}    # share/select on common PlayStation/generic mappings
+RUN_BUTTONS = {9, 7}        # options/start on common PlayStation/generic mappings
+HOME_BUTTONS = {10}
+OPEN_BUTTONS = {4}
+CLOSE_BUTTONS = {5}
 #################################################################################################################
 
 
@@ -67,18 +71,26 @@ def axis_value(axes, index, default=0.0):
     return default
 
 
-def waypoint_position(base, shoulder, elbow, gripper):
-    """Return a serializable waypoint position."""
+def cartesian_distance(point_a, point_b):
+    """Return Cartesian distance between two x/y/z tuples."""
+    dx = point_a[0] - point_b[0]
+    dy = point_a[1] - point_b[1]
+    dz = point_a[2] - point_b[2]
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def waypoint_position(x, y, z, finger):
+    """Return a serializable Cartesian waypoint."""
     return {
-        "base": base,
-        "shoulder": shoulder,
-        "elbow": elbow,
-        "gripper": gripper,
+        "x": x,
+        "y": y,
+        "z": z,
+        "finger": finger,
     }
 
 
 def load_waypoints(logger):
-    """Load direct-controller waypoints from JSON."""
+    """Load Cartesian controller waypoints from JSON."""
     waypoints = {name: None for name in WAYPOINT_BUTTONS.values()}
     if not WAYPOINT_FILE.exists():
         return waypoints
@@ -95,10 +107,10 @@ def load_waypoints(logger):
         if isinstance(position, dict):
             try:
                 waypoints[name] = {
-                    "base": float(position["base"]),
-                    "shoulder": float(position["shoulder"]),
-                    "elbow": float(position["elbow"]),
-                    "gripper": float(position["gripper"]),
+                    "x": float(position["x"]),
+                    "y": float(position["y"]),
+                    "z": float(position["z"]),
+                    "finger": float(position["finger"]),
                 }
             except (KeyError, TypeError, ValueError):
                 logger.warning("Ignoring invalid waypoint %s in %s", name, WAYPOINT_FILE)
@@ -107,7 +119,7 @@ def load_waypoints(logger):
 
 
 def save_waypoints(waypoints, logger):
-    """Save direct-controller waypoints to JSON."""
+    """Save Cartesian controller waypoints to JSON."""
     try:
         with WAYPOINT_FILE.open("w") as f:
             json.dump(waypoints, f, indent=4)
@@ -116,131 +128,134 @@ def save_waypoints(waypoints, logger):
         logger.warning("Could not save %s: %s", WAYPOINT_FILE, exc)
 
 
-def handle_waypoint_button(
-    button,
-    base,
-    shoulder,
-    elbow,
-    gripper,
-    waypoints,
-    programming_mode,
-    logger,
-):
-    """Store or recall a waypoint from a face-button press."""
+def handle_waypoint_button(button, state, logger):
+    """Store or recall a Cartesian waypoint from a face-button press."""
     name = WAYPOINT_BUTTONS.get(button)
-    status = None
     if name is None:
-        return base, shoulder, elbow, gripper, status
+        return False
 
-    if programming_mode:
-        waypoints[name] = waypoint_position(base, shoulder, elbow, gripper)
-        save_waypoints(waypoints, logger)
-        status = f"Saved {name} waypoint"
-        logger.info(status)
-        return base, shoulder, elbow, gripper, status
+    if state["programming_mode"]:
+        state["waypoints"][name] = waypoint_position(
+            state["x"],
+            state["y"],
+            state["z"],
+            state["finger"],
+        )
+        save_waypoints(state["waypoints"], logger)
+        state["status"] = f"Saved {name} waypoint"
+        logger.info(state["status"])
+        return True
 
-    position = waypoints.get(name)
+    position = state["waypoints"].get(name)
     if position is None:
-        status = f"No {name} waypoint saved"
-        logger.info(status)
-        return base, shoulder, elbow, gripper, status
+        state["status"] = f"No {name} waypoint saved"
+        logger.info(state["status"])
+        return True
 
-    status = f"Loaded {name} waypoint"
-    logger.info(status)
-    return (
-        position["base"],
-        position["shoulder"],
-        position["elbow"],
-        position["gripper"],
-        status,
-    )
+    state["x"] = position["x"]
+    state["y"] = position["y"]
+    state["z"] = position["z"]
+    state["finger"] = position["finger"]
+    state["status"] = f"Loaded {name} waypoint"
+    logger.info(state["status"])
+    return True
 
 
-def check_servo_keys(base, shoulder, elbow, gripper, logger):
-    """Poll keyboard for direct servo control."""
+def check_cartesian_keys(x, y, z, finger, logger):
+    """Poll keyboard for Cartesian inverse-kinematics control."""
     keys = pygame.key.get_pressed()
     if keys[pygame.K_RIGHT]:
-        base += SERVO_STEP
-        logger.debug("Base increase")
+        x += CARTESIAN_STEP
+        logger.debug("X increase")
     elif keys[pygame.K_LEFT]:
-        base -= SERVO_STEP
-        logger.debug("Base decrease")
+        x -= CARTESIAN_STEP
+        logger.debug("X decrease")
     elif keys[pygame.K_UP]:
-        shoulder += SERVO_STEP
-        logger.debug("Shoulder increase")
+        y += CARTESIAN_STEP
+        logger.debug("Y increase")
     elif keys[pygame.K_DOWN]:
-        shoulder -= SERVO_STEP
-        logger.debug("Shoulder decrease")
+        y -= CARTESIAN_STEP
+        logger.debug("Y decrease")
     elif keys[pygame.K_w]:
-        elbow += SERVO_STEP
-        logger.debug("Elbow increase")
+        z += CARTESIAN_STEP
+        logger.debug("Z increase")
     elif keys[pygame.K_s]:
-        elbow -= SERVO_STEP
-        logger.debug("Elbow decrease")
-    elif keys[pygame.K_d]:
-        gripper += SERVO_STEP
+        z -= CARTESIAN_STEP
+        logger.debug("Z decrease")
+    elif keys[pygame.K_o]:
+        finger = 100.0
+        logger.debug("Gripper open")
+    elif keys[pygame.K_l]:
+        finger = 0.0
+        logger.debug("Gripper close")
+    elif keys[pygame.K_p]:
+        finger = 50.0
+        logger.debug("Gripper half-open")
+    elif keys[pygame.K_q]:
+        finger += GRIPPER_STEP
         logger.debug("Gripper increase")
     elif keys[pygame.K_a]:
-        gripper -= SERVO_STEP
+        finger -= GRIPPER_STEP
         logger.debug("Gripper decrease")
 
-    return base, shoulder, elbow, gripper
+    return x, y, z, finger
 
 
-def check_servo_joy_axis(joystick, base, shoulder, elbow, gripper, logger):
-    """Handle direct joint-angle input from joystick axes."""
+def check_cartesian_joy_axis(joystick, x, y, z, finger, logger):
+    """Handle Cartesian input from joystick axes."""
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     joy = False
 
-    base_axis = axis_value(axes, 0)
-    shoulder_axis = axis_value(axes, 1)
-    elbow_axis = axis_value(axes, 4)
+    x_axis = axis_value(axes, 0)
+    y_axis = axis_value(axes, 1)
+    z_axis = axis_value(axes, 4)
     left_trigger = axis_value(axes, 2, -1.0)
     right_trigger = axis_value(axes, 5, -1.0)
 
-    if abs(base_axis) > JOYTHRESH:
-        base += base_axis * SERVO_STEP
+    if abs(x_axis) > JOYTHRESH:
+        x += x_axis * CARTESIAN_STEP
         joy = True
-    if abs(shoulder_axis) > JOYTHRESH:
-        shoulder -= shoulder_axis * SERVO_STEP
+    if abs(y_axis) > JOYTHRESH:
+        y -= y_axis * CARTESIAN_STEP
         joy = True
-    if abs(elbow_axis) > JOYTHRESH:
-        elbow -= elbow_axis * SERVO_STEP
+    if abs(z_axis) > JOYTHRESH:
+        z -= z_axis * CARTESIAN_STEP
         joy = True
     if left_trigger > -1.0 or right_trigger > -1.0:
-        gripper += ((left_trigger + 1.0) / 2.0 - (right_trigger + 1.0) / 2.0) * SERVO_STEP
+        finger += ((left_trigger + 1.0) / 2.0 - (right_trigger + 1.0) / 2.0) * GRIPPER_STEP
         joy = True
 
     if joy:
-        logger.debug(
-            "Joystick base:%.0f shoulder:%.0f elbow:%.0f gripper:%.0f",
-            base,
-            shoulder,
-            elbow,
-            gripper,
-        )
+        logger.debug("Joystick x:%.0f y:%.0f z:%.0f gripper:%.0f", x, y, z, finger)
 
-    return base, shoulder, elbow, gripper
+    return x, y, z, finger
 
 
-def check_servo_joy_hat(joystick, base, shoulder, elbow, gripper, logger):
-    """Handle direct gripper input from the joystick D-pad/hat."""
+def check_cartesian_joy_hat(joystick, x, y, z, finger, logger):
+    """Handle Cartesian X/Y input from the joystick D-pad/hat."""
     if joystick.get_numhats() < 1:
-        return base, shoulder, elbow, gripper
+        return x, y, z, finger
 
-    hat_x, _ = joystick.get_hat(0)
+    hat_x, hat_y = joystick.get_hat(0)
     if hat_x > 0:
-        gripper += SERVO_STEP
-        logger.debug("Joystick hat gripper increase")
+        x += CARTESIAN_STEP
+        logger.debug("Joystick hat X increase")
     elif hat_x < 0:
-        gripper -= SERVO_STEP
-        logger.debug("Joystick hat gripper decrease")
+        x -= CARTESIAN_STEP
+        logger.debug("Joystick hat X decrease")
 
-    return base, shoulder, elbow, gripper
+    if hat_y > 0:
+        y += CARTESIAN_STEP
+        logger.debug("Joystick hat Y increase")
+    elif hat_y < 0:
+        y -= CARTESIAN_STEP
+        logger.debug("Joystick hat Y decrease")
+
+    return x, y, z, finger
 
 
-def handle_servo_button(button, state, logger):
-    """Handle gamepad button functions for direct servo control."""
+def handle_cartesian_button(button, state, logger):
+    """Handle gamepad button functions for Cartesian control."""
     if button in PROGRAM_BUTTONS:
         state["programming_mode"] = True
         state["status"] = "Programming: press waypoint button to save"
@@ -249,39 +264,33 @@ def handle_servo_button(button, state, logger):
         state["programming_mode"] = False
         state["status"] = "Run mode: press waypoint button to move"
         return True
-
-    (
-        state["base"],
-        state["shoulder"],
-        state["elbow"],
-        state["gripper"],
-        waypoint_status,
-    ) = handle_waypoint_button(
-        button,
-        state["base"],
-        state["shoulder"],
-        state["elbow"],
-        state["gripper"],
-        state["waypoints"],
-        state["programming_mode"],
-        logger,
-    )
-    if waypoint_status is not None:
-        state["status"] = waypoint_status
+    if button in OPEN_BUTTONS:
+        state["finger"] = 100.0
+        state["status"] = "Gripper open"
         return True
-    return False
+    if button in CLOSE_BUTTONS:
+        state["finger"] = 0.0
+        state["status"] = "Gripper closed"
+        return True
+    if button in HOME_BUTTONS:
+        state["x"] = 0.0
+        state["y"] = 150.0
+        state["z"] = 100.0
+        state["status"] = "Home waypoint loaded"
+        return True
+
+    return handle_waypoint_button(button, state, logger)
 
 
 def create_state(arm, logger):
-    """Build mutable direct-controller state."""
-    base, shoulder, elbow = arm.get_joint_angles()
-    gripper = arm.get_gripper_angle()
+    """Build mutable Cartesian-controller state."""
+    x, y, z = arm.get_position()
     return {
         "arm": arm,
-        "base": base,
-        "shoulder": shoulder,
-        "elbow": elbow,
-        "gripper": gripper,
+        "x": x,
+        "y": y,
+        "z": z,
+        "finger": arm.get_finger(),
         "waypoints": load_waypoints(logger),
         "programming_mode": False,
         "status": "Run mode: press waypoint button to move",
@@ -296,48 +305,54 @@ def shutdown_hardware(state):
         state["arm"] = None
 
 
-def service_servo_mode(state, joystick, joy, current_time, check_userinput_time, motor_time, logger):
-    """Poll and service direct servo controls."""
+def service_cartesian_mode(state, joystick, joy, current_time, check_userinput_time, motor_time, logger):
+    """Poll and service Cartesian inverse-kinematics controls."""
     changed = False
     if (current_time - check_userinput_time) > INTERVAL_USERINPUT:
-        state["base"], state["shoulder"], state["elbow"], state["gripper"] = check_servo_keys(
-            state["base"],
-            state["shoulder"],
-            state["elbow"],
-            state["gripper"],
+        state["x"], state["y"], state["z"], state["finger"] = check_cartesian_keys(
+            state["x"],
+            state["y"],
+            state["z"],
+            state["finger"],
             logger,
         )
         if joy:
-            state["base"], state["shoulder"], state["elbow"], state["gripper"] = check_servo_joy_axis(
+            state["x"], state["y"], state["z"], state["finger"] = check_cartesian_joy_axis(
                 joystick,
-                state["base"],
-                state["shoulder"],
-                state["elbow"],
-                state["gripper"],
+                state["x"],
+                state["y"],
+                state["z"],
+                state["finger"],
                 logger,
             )
-            state["base"], state["shoulder"], state["elbow"], state["gripper"] = check_servo_joy_hat(
+            state["x"], state["y"], state["z"], state["finger"] = check_cartesian_joy_hat(
                 joystick,
-                state["base"],
-                state["shoulder"],
-                state["elbow"],
-                state["gripper"],
+                state["x"],
+                state["y"],
+                state["z"],
+                state["finger"],
                 logger,
             )
         check_userinput_time = current_time
 
     arm = state["arm"]
     if arm is not None and (current_time - motor_time) > INTERVAL_MOTOR:
-        if (state["base"], state["shoulder"], state["elbow"]) != arm.get_joint_angles():
-            state["base"], state["shoulder"], state["elbow"] = arm.set_joint_angles(
-                state["base"],
-                state["shoulder"],
-                state["elbow"],
-            )
+        if (state["x"], state["y"], state["z"]) != arm.get_position():
+            requested = (state["x"], state["y"], state["z"])
+            if arm.move_to(*requested):
+                actual = arm.get_position()
+                if cartesian_distance(requested, actual) > 1.0:
+                    state["status"] = "Moved to nearest pose allowed by joint/servo limits"
+                else:
+                    state["status"] = "Moved to requested Cartesian position"
+            else:
+                state["status"] = "Requested Cartesian position is out of IK range"
+            state["x"], state["y"], state["z"] = arm.get_position()
             changed = True
 
-        if state["gripper"] != arm.get_gripper_angle():
-            state["gripper"] = arm.set_gripper_angle(state["gripper"])
+        if state["finger"] != arm.get_finger():
+            arm.partial_grip(state["finger"])
+            state["finger"] = arm.get_finger()
             changed = True
 
         motor_time = current_time
@@ -346,17 +361,17 @@ def service_servo_mode(state, joystick, joy, current_time, check_userinput_time,
 
 
 def update_text(state, screen, font, font_small):
-    """Render the direct-controller state."""
+    """Render the Cartesian-controller state."""
     programming_mode = state["programming_mode"]
     blink_on = int(time.time() / INTERVAL_BLINK) % 2 == 0
 
     screen.fill((255, 255, 255))
-    title = font.render("Mode: DIRECT SERVO", True, (0, 0, 0))
+    title = font.render("Mode: CARTESIAN IK", True, (0, 0, 0))
     status = font_small.render(state["status"], True, (0, 0, 0))
     screen.blit(title, (10, 10))
     screen.blit(status, (10, 42))
 
-    mode_color = (0, 120, 0)
+    mode_color = (0, 90, 190)
     pygame.draw.circle(screen, mode_color, (500, 24), 10)
     pygame.draw.circle(screen, (0, 0, 0), (500, 24), 10, 2)
 
@@ -369,20 +384,22 @@ def update_text(state, screen, font, font_small):
     pygame.draw.circle(screen, led_color, (500, 50), 8)
     pygame.draw.circle(screen, led_outline, (500, 50), 8, 2)
 
-    servo_1 = font_small.render(
-        f"Servo base/shoulder/elbow: {state['base']:.0f} / {state['shoulder']:.0f} / {state['elbow']:.0f}",
+    cartesian_1 = font_small.render(
+        f"Cartesian x/y/z: {state['x']:.0f} / {state['y']:.0f} / {state['z']:.0f} mm",
         True,
         (0, 0, 0),
     )
-    servo_2 = font_small.render(f"Servo gripper: {state['gripper']:.0f}", True, (0, 0, 0))
-    screen.blit(servo_1, (10, 80))
-    screen.blit(servo_2, (10, 102))
+    cartesian_2 = font_small.render(f"Gripper open: {state['finger']:.0f}%", True, (0, 0, 0))
+    screen.blit(cartesian_1, (10, 80))
+    screen.blit(cartesian_2, (10, 102))
 
     help_lines = [
-        "Servo keys:     arrows base/shoulder, W/S elbow, A/D gripper",
-        "Servo joystick: axis 0/1/4 joints, triggers or D-pad L/R gripper",
-        "Waypoints:     Square/X/Circle/Triangle",
-        "Program/run:   left center saves waypoint, right center returns to run",
+        "Cartesian keys: arrows X/Y, W/S Z, O/L/P/Q/A gripper",
+        "Joystick:       axis 0/1/4 X/Y/Z, triggers gripper, D-pad X/Y",
+        "Waypoints:      Square/X/Circle/Triangle use direct move_to commands",
+        "Program/run:    left center saves waypoint, right center returns to run",
+        "Home:           home button returns to x=0, y=150, z=100",
+        "Limits:         displayed pose is the actual pose after IK, joint, and servo clamps",
     ]
     for index, line in enumerate(help_lines):
         rendered = font_small.render(line, True, (0, 0, 0))
@@ -403,7 +420,7 @@ def main():
     pygame.init()
     pygame.joystick.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
-    pygame.display.set_caption("meArm Direct Controller")
+    pygame.display.set_caption("meArm Cartesian Controller 2026")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 32)
     font_small = pygame.font.SysFont(None, 20)
@@ -436,10 +453,10 @@ def main():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.JOYBUTTONDOWN:
-                    if handle_servo_button(event.button, state, logger):
+                    if handle_cartesian_button(event.button, state, logger):
                         redraw = True
 
-            check_userinput_time, motor_time, changed = service_servo_mode(
+            check_userinput_time, motor_time, changed = service_cartesian_mode(
                 state,
                 joystick,
                 joy,
