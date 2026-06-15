@@ -272,6 +272,17 @@ class meArm:
 
     def _apply_joint_angles(self, base_rad: float, shoulder_rad: float, elbow_rad: float) -> Tuple[float, float, float]:
         """Clamp, command, and store the actual joint angles reached by the servos."""
+        base_rad, shoulder_rad, elbow_rad = self._resolve_joint_angles(base_rad, shoulder_rad, elbow_rad)
+
+        self.servos['base'].angle = self._angle_to_servo('base', base_rad)
+        self.servos['shoulder'].angle = self._angle_to_servo('shoulder', shoulder_rad)
+        self.servos['elbow'].angle = self._angle_to_servo('elbow', elbow_rad)
+
+        self._update_joint_state(base_rad, shoulder_rad, elbow_rad)
+        return base_rad, shoulder_rad, elbow_rad
+
+    def _resolve_joint_angles(self, base_rad: float, shoulder_rad: float, elbow_rad: float) -> Tuple[float, float, float]:
+        """Return actual joint angles after joint-limit and servo-command clamping."""
         base_rad = self._angle_limits('base', base_rad)
         shoulder_rad = self._angle_limits('shoulder', shoulder_rad)
         elbow_rad = self._angle_limits('elbow', elbow_rad)
@@ -280,14 +291,9 @@ class meArm:
         motor_shoulder = self._angle_to_servo('shoulder', shoulder_rad)
         motor_elbow = self._angle_to_servo('elbow', elbow_rad)
 
-        self.servos['base'].angle = motor_base
-        self.servos['shoulder'].angle = motor_shoulder
-        self.servos['elbow'].angle = motor_elbow
-
         base_rad = self._servo_to_angle('base', motor_base)
         shoulder_rad = self._servo_to_angle('shoulder', motor_shoulder)
         elbow_rad = self._servo_to_angle('elbow', motor_elbow)
-        self._update_joint_state(base_rad, shoulder_rad, elbow_rad)
         return base_rad, shoulder_rad, elbow_rad
 
     def _apply_gripper_angle(self, gripper_rad: float) -> float:
@@ -359,15 +365,8 @@ class meArm:
         """
         self.logger.info("Attempting to move to (%.1f, %.1f, %.1f)", x, y, z)
 
-        # Absolute Max Positions
-        # x 220 .. -220
-        # y 217 ..    7
-        # z 120 ..  -79
-        x = clamp(x, -220., 220.)
-        y = clamp(y,    5., 220.)
-        z = clamp(z,  -50., 120.)
-
-        # compute angles
+        # Compute angles from the requested Cartesian position. Reach and safety
+        # are enforced by IK validity, configured joint limits, and servo limits.
         sol = kinematics.inverse_kinematics(x, y, z)
         if sol is None:
             self.logger.warning("Position out of inverse kinematics range: %s", (x, y, z))
@@ -375,6 +374,16 @@ class meArm:
         self._apply_joint_angles(*sol)
         self.logger.info("Moved to (%.1f, %.1f, %.1f)", self.x, self.y, self.z)
         return True
+
+    def preview_move_to(self, x: float, y: float, z: float):
+        """
+        Return the Cartesian pose that would be reached after IK, joint limits,
+        and servo-command limits, without moving the servos.
+        """
+        sol = kinematics.inverse_kinematics(x, y, z)
+        if sol is None:
+            return None
+        return kinematics.forward_kinematics(*self._resolve_joint_angles(*sol))
 
     def move_linear(self, x: float, y: float, z: float, step: float = 10.0, delay: float = 0.05) -> bool:
         """

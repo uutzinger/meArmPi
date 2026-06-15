@@ -64,6 +64,9 @@ INTERVAL_USERINPUT = 0.03
 INTERVAL_MOTOR = 0.01
 INTERVAL_BLINK = 0.35
 JOYTHRESH = 0.01
+MANUAL_MOVE_GUARD_DISTANCE = 15.0
+BOUNDARY_MIN_PROGRESS_FRACTION = 0.25
+BOUNDARY_LATERAL_LIMIT = 8.0
 MODE_SWITCH_COOLDOWN = 0.2
 PCA_SETTLE_DELAY = 0.02
 
@@ -169,6 +172,48 @@ def cartesian_distance(point_a, point_b):
     dy = point_a[1] - point_b[1]
     dz = point_a[2] - point_b[2]
     return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def cartesian_delta(point_a, point_b):
+    """Return point_b - point_a as a Cartesian vector."""
+    return (
+        point_b[0] - point_a[0],
+        point_b[1] - point_a[1],
+        point_b[2] - point_a[2],
+    )
+
+
+def dot(vector_a, vector_b):
+    """Return the dot product of two 3D vectors."""
+    return (
+        vector_a[0] * vector_b[0]
+        + vector_a[1] * vector_b[1]
+        + vector_a[2] * vector_b[2]
+    )
+
+
+def boundary_guard_blocks_move(current, requested, preview):
+    """Block tiny moves that would turn into a large sideways limit correction."""
+    request_delta = cartesian_delta(current, requested)
+    request_mag = cartesian_distance(current, requested)
+    if request_mag == 0.0 or request_mag > MANUAL_MOVE_GUARD_DISTANCE:
+        return False
+
+    actual_delta = cartesian_delta(current, preview)
+    actual_mag = cartesian_distance(current, preview)
+    target_error = cartesian_distance(requested, preview)
+    if target_error <= 1.0:
+        return False
+
+    progress = dot(request_delta, actual_delta) / request_mag
+    lateral_sq = max(0.0, actual_mag * actual_mag - progress * progress)
+    lateral = lateral_sq ** 0.5
+
+    if actual_mag < 0.5:
+        return True
+    if progress < request_mag * BOUNDARY_MIN_PROGRESS_FRACTION:
+        return True
+    return lateral > max(BOUNDARY_LATERAL_LIMIT, request_mag * 2.0)
 
 
 def waypoint_position(x, y, z, finger):
@@ -433,6 +478,9 @@ def stepper_keyboard_command():
 
 def button_pressed(joystick, button_numbers):
     """Return True when any listed joystick button exists and is pressed."""
+    if joystick is None:
+        return False
+
     button_count = joystick.get_numbuttons()
     for button in button_numbers:
         if button < button_count and joystick.get_button(button):
@@ -453,6 +501,9 @@ def is_servo_button(button):
 
 def servo_joystick_requested(joystick):
     """Detect Cartesian servo input so controls can switch back to servo mode."""
+    if joystick is None:
+        return False
+
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     if abs(axis_value(axes, 0)) > JOYTHRESH:
         return True
@@ -473,6 +524,9 @@ def servo_joystick_requested(joystick):
 
 def stepper_joystick_command(joystick):
     """Read L1/R1 commands for the M3/M4 syringe pump stepper in stepper mode."""
+    if joystick is None:
+        return 0.0
+
     command_rpm = 0.0
     if button_pressed(joystick, R1_BUTTONS):
         command_rpm += STEPPER_RPM
@@ -732,7 +786,7 @@ def handle_servo_button(button, state, logger):
 
 def handle_automatic_joystick_mode(joystick, joy, state, logger):
     """Switch modes from joystick controls without requiring keyboard mode keys."""
-    if not joy:
+    if not joy or joystick is None:
         return False
 
     if stepper_joystick_command(joystick) != 0.0:
@@ -757,7 +811,7 @@ def service_servo_mode(state, joystick, joy, current_time, check_userinput_time,
             state["finger"],
             logger,
         )
-        if joy:
+        if joy and joystick is not None:
             state["x"], state["y"], state["z"], state["finger"] = check_cartesian_joy_axis(
                 joystick,
                 state["x"],
@@ -779,16 +833,25 @@ def service_servo_mode(state, joystick, joy, current_time, check_userinput_time,
     arm = state["arm"]
     if arm is not None and (current_time - motor_time) > INTERVAL_MOTOR:
         if (state["x"], state["y"], state["z"]) != arm.get_position():
+            current = arm.get_position()
             requested = (state["x"], state["y"], state["z"])
-            if arm.move_to(*requested):
+            preview = arm.preview_move_to(*requested)
+            if preview is None:
+                state["status"] = "Requested Cartesian position is out of IK range"
+                state["x"], state["y"], state["z"] = current
+            elif boundary_guard_blocks_move(current, requested, preview):
+                state["status"] = "Boundary reached; holding actual pose"
+                state["x"], state["y"], state["z"] = current
+            elif arm.move_to(*requested):
                 actual = arm.get_position()
                 if cartesian_distance(requested, actual) > 1.0:
                     state["status"] = "Moved to nearest pose allowed by joint/servo limits"
                 else:
                     state["status"] = "Moved to requested Cartesian position"
+                state["x"], state["y"], state["z"] = actual
             else:
                 state["status"] = "Requested Cartesian position is out of IK range"
-            state["x"], state["y"], state["z"] = arm.get_position()
+                state["x"], state["y"], state["z"] = current
             changed = True
 
         if state["finger"] != arm.get_finger():
@@ -804,7 +867,7 @@ def service_servo_mode(state, joystick, joy, current_time, check_userinput_time,
 def service_stepper_mode(state, joystick, joy, current_time):
     """Poll and service the M3/M4 syringe pump stepper."""
     command_rpm = stepper_keyboard_command()
-    if joy and command_rpm == 0.0:
+    if joy and joystick is not None and command_rpm == 0.0:
         command_rpm = stepper_joystick_command(joystick)
 
     if state["pending_mode"] in {MODE_SERVO, MODE_IDLE}:
@@ -816,6 +879,34 @@ def service_stepper_mode(state, joystick, joy, current_time):
         changed = service_stepper(state["stepper"], command_rpm, state["stepper_state"], current_time)
 
     return changed or previous_rpm != state["stepper_state"]["command_rpm"]
+
+
+def connect_joystick(logger, device_index=0):
+    """Connect a pygame joystick if one is available."""
+    if pygame.joystick.get_count() == 0:
+        logger.warning("No controller detected.")
+        return None, False
+
+    try:
+        joystick = pygame.joystick.Joystick(device_index)
+        joystick.init()
+    except pygame.error as exc:
+        logger.warning("Could not initialize controller: %s", exc)
+        return None, False
+
+    logger.info("Controller detected: %s", joystick.get_name())
+    return joystick, True
+
+
+def joystick_instance_id(joystick):
+    """Return a stable joystick instance id when pygame exposes one."""
+    if joystick is None:
+        return None
+
+    get_instance_id = getattr(joystick, "get_instance_id", None)
+    if get_instance_id is None:
+        return None
+    return get_instance_id()
 
 
 def draw_label(screen, font, text, pos, color=(0, 0, 0)):
@@ -979,15 +1070,7 @@ def main():
     font = pygame.font.SysFont(None, 32)
     font_small = pygame.font.SysFont(None, 20)
 
-    try:
-        joystick = pygame.joystick.Joystick(0)
-        joystick.init()
-        logger.info("Controller detected: %s", joystick.get_name())
-        joy = True
-    except pygame.error:
-        logger.warning("No controller detected.")
-        joystick = None
-        joy = False
+    joystick, joy = connect_joystick(logger)
 
     state = create_state(logger)
     enter_servo_mode(state, logger)
@@ -1003,13 +1086,30 @@ def main():
         while running:
             current_time = time.time()
             redraw = False
+            joy_device_added = getattr(pygame, "JOYDEVICEADDED", None)
+            joy_device_removed = getattr(pygame, "JOYDEVICEREMOVED", None)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if handle_mode_key(event, state, logger):
                         redraw = True
+                elif joy_device_added is not None and event.type == joy_device_added:
+                    device_index = getattr(event, "device_index", 0)
+                    joystick, joy = connect_joystick(logger, device_index)
+                    if joy:
+                        state["status"] = "Controller connected"
+                        redraw = True
+                elif joy_device_removed is not None and event.type == joy_device_removed:
+                    removed_id = getattr(event, "instance_id", None)
+                    if removed_id is None or removed_id == joystick_instance_id(joystick):
+                        joystick = None
+                        joy = False
+                        state["status"] = "Controller disconnected"
+                        redraw = True
                 elif event.type == pygame.JOYBUTTONDOWN:
+                    if not joy:
+                        continue
                     if is_stepper_button(event.button):
                         redraw = request_mode(MODE_STEPPER, state, logger) or redraw
                     elif is_servo_button(event.button):

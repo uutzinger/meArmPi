@@ -47,6 +47,9 @@ INTERVAL_USERINPUT = 0.03   # seconds
 INTERVAL_MOTOR = 0.01       # seconds
 INTERVAL_BLINK = 0.35       # seconds
 JOYTHRESH = 0.01            # minimum stick movement to register
+MANUAL_MOVE_GUARD_DISTANCE = 15.0
+BOUNDARY_MIN_PROGRESS_FRACTION = 0.25
+BOUNDARY_LATERAL_LIMIT = 8.0
 
 WINDOW_SIZE = (540, 380)    # pixels
 WAYPOINT_FILE = Path(__file__).with_name("controller_waypoints.json")
@@ -77,6 +80,48 @@ def cartesian_distance(point_a, point_b):
     dy = point_a[1] - point_b[1]
     dz = point_a[2] - point_b[2]
     return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def cartesian_delta(point_a, point_b):
+    """Return point_b - point_a as a Cartesian vector."""
+    return (
+        point_b[0] - point_a[0],
+        point_b[1] - point_a[1],
+        point_b[2] - point_a[2],
+    )
+
+
+def dot(vector_a, vector_b):
+    """Return the dot product of two 3D vectors."""
+    return (
+        vector_a[0] * vector_b[0]
+        + vector_a[1] * vector_b[1]
+        + vector_a[2] * vector_b[2]
+    )
+
+
+def boundary_guard_blocks_move(current, requested, preview):
+    """Block tiny moves that would turn into a large sideways limit correction."""
+    request_delta = cartesian_delta(current, requested)
+    request_mag = cartesian_distance(current, requested)
+    if request_mag == 0.0 or request_mag > MANUAL_MOVE_GUARD_DISTANCE:
+        return False
+
+    actual_delta = cartesian_delta(current, preview)
+    actual_mag = cartesian_distance(current, preview)
+    target_error = cartesian_distance(requested, preview)
+    if target_error <= 1.0:
+        return False
+
+    progress = dot(request_delta, actual_delta) / request_mag
+    lateral_sq = max(0.0, actual_mag * actual_mag - progress * progress)
+    lateral = lateral_sq ** 0.5
+
+    if actual_mag < 0.5:
+        return True
+    if progress < request_mag * BOUNDARY_MIN_PROGRESS_FRACTION:
+        return True
+    return lateral > max(BOUNDARY_LATERAL_LIMIT, request_mag * 2.0)
 
 
 def waypoint_position(x, y, z, finger):
@@ -338,16 +383,25 @@ def service_cartesian_mode(state, joystick, joy, current_time, check_userinput_t
     arm = state["arm"]
     if arm is not None and (current_time - motor_time) > INTERVAL_MOTOR:
         if (state["x"], state["y"], state["z"]) != arm.get_position():
+            current = arm.get_position()
             requested = (state["x"], state["y"], state["z"])
-            if arm.move_to(*requested):
+            preview = arm.preview_move_to(*requested)
+            if preview is None:
+                state["status"] = "Requested Cartesian position is out of IK range"
+                state["x"], state["y"], state["z"] = current
+            elif boundary_guard_blocks_move(current, requested, preview):
+                state["status"] = "Boundary reached; holding actual pose"
+                state["x"], state["y"], state["z"] = current
+            elif arm.move_to(*requested):
                 actual = arm.get_position()
                 if cartesian_distance(requested, actual) > 1.0:
                     state["status"] = "Moved to nearest pose allowed by joint/servo limits"
                 else:
                     state["status"] = "Moved to requested Cartesian position"
+                state["x"], state["y"], state["z"] = actual
             else:
                 state["status"] = "Requested Cartesian position is out of IK range"
-            state["x"], state["y"], state["z"] = arm.get_position()
+                state["x"], state["y"], state["z"] = current
             changed = True
 
         if state["finger"] != arm.get_finger():
