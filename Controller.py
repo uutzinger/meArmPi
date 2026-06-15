@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 #################################################################################################################
-# meArm Controller
-# Uses keyboard or gamepad to control meArm
+# meArm Cartesian Controller
+# Uses keyboard or gamepad to control the meArm end effector with inverse kinematics.
 #################################################################################################################
 
 # ##############################################################################
-# 
+#
 # The MIT License (MIT)
-# 
-# Copyright (c) 2025 Urs Utzinger
-# 
+#
+# Copyright (c) 2026 Urs Utzinger
+#
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -29,189 +29,436 @@
 # SOFTWARE.
 # ##############################################################################
 
-import pygame
-import meArm
-import time
+import json
 import logging
+from pathlib import Path
+import time
+
+import pygame
+
+import meArm
 
 #################################################################################################################
-STEP = 5.                   ## in mm
-INTERVAL_USERINPUT = 0.03   ## in seconds
-INTERVAL_MOTOR = 0.01       ## in seconds
-JOYTHRESH = 0.01            ## threshold to register joystick activity
-WINDOW_SIZE = (400, 300)    ## in pixels
+HAT_ADDRESS = 0x6F
+CARTESIAN_STEP = 5.0        # millimeters per keyboard/user-input step
+GRIPPER_STEP = 5.0          # percentage points per keyboard/user-input step
+
+INTERVAL_USERINPUT = 0.03   # seconds
+INTERVAL_MOTOR = 0.01       # seconds
+INTERVAL_BLINK = 0.35       # seconds
+JOYTHRESH = 0.01            # minimum stick movement to register
+MANUAL_MOVE_GUARD_DISTANCE = 15.0
+BOUNDARY_MIN_PROGRESS_FRACTION = 0.25
+BOUNDARY_LATERAL_LIMIT = 8.0
+
+WINDOW_SIZE = (540, 380)    # pixels
+WAYPOINT_FILE = Path(__file__).with_name("controller_waypoints.json")
+WAYPOINT_BUTTONS = {
+    3: "square",
+    0: "x",
+    1: "circle",
+    2: "triangle",
+}
+PROGRAM_BUTTONS = {8, 6}    # share/select on common PlayStation/generic mappings
+RUN_BUTTONS = {9, 7}        # options/start on common PlayStation/generic mappings
+HOME_BUTTONS = {10}
+OPEN_BUTTONS = {4}
+CLOSE_BUTTONS = {5}
 #################################################################################################################
 
-def clamp(val, mn, mx):
-    return max(mn, min(mx, val))
 
-def checkKeys(x,y,z,finger,logger):
-    """
-    Poll keyboard, 
-    this allows pushing multiple keys at once
-    """
+def axis_value(axes, index, default=0.0):
+    """Return an axis value if the controller exposes it."""
+    if index < len(axes):
+        return axes[index]
+    return default
+
+
+def cartesian_distance(point_a, point_b):
+    """Return Cartesian distance between two x/y/z tuples."""
+    dx = point_a[0] - point_b[0]
+    dy = point_a[1] - point_b[1]
+    dz = point_a[2] - point_b[2]
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def cartesian_delta(point_a, point_b):
+    """Return point_b - point_a as a Cartesian vector."""
+    return (
+        point_b[0] - point_a[0],
+        point_b[1] - point_a[1],
+        point_b[2] - point_a[2],
+    )
+
+
+def dot(vector_a, vector_b):
+    """Return the dot product of two 3D vectors."""
+    return (
+        vector_a[0] * vector_b[0]
+        + vector_a[1] * vector_b[1]
+        + vector_a[2] * vector_b[2]
+    )
+
+
+def boundary_guard_blocks_move(current, requested, preview):
+    """Block tiny moves that would turn into a large sideways limit correction."""
+    request_delta = cartesian_delta(current, requested)
+    request_mag = cartesian_distance(current, requested)
+    if request_mag == 0.0 or request_mag > MANUAL_MOVE_GUARD_DISTANCE:
+        return False
+
+    actual_delta = cartesian_delta(current, preview)
+    actual_mag = cartesian_distance(current, preview)
+    target_error = cartesian_distance(requested, preview)
+    if target_error <= 1.0:
+        return False
+
+    progress = dot(request_delta, actual_delta) / request_mag
+    lateral_sq = max(0.0, actual_mag * actual_mag - progress * progress)
+    lateral = lateral_sq ** 0.5
+
+    if actual_mag < 0.5:
+        return True
+    if progress < request_mag * BOUNDARY_MIN_PROGRESS_FRACTION:
+        return True
+    return lateral > max(BOUNDARY_LATERAL_LIMIT, request_mag * 2.0)
+
+
+def waypoint_position(x, y, z, finger):
+    """Return a serializable Cartesian waypoint."""
+    return {
+        "x": x,
+        "y": y,
+        "z": z,
+        "finger": finger,
+    }
+
+
+def load_waypoints(logger):
+    """Load Cartesian controller waypoints from JSON."""
+    waypoints = {name: None for name in WAYPOINT_BUTTONS.values()}
+    if not WAYPOINT_FILE.exists():
+        return waypoints
+
+    try:
+        with WAYPOINT_FILE.open() as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not load %s: %s", WAYPOINT_FILE, exc)
+        return waypoints
+
+    for name in waypoints:
+        position = data.get(name)
+        if isinstance(position, dict):
+            try:
+                waypoints[name] = {
+                    "x": float(position["x"]),
+                    "y": float(position["y"]),
+                    "z": float(position["z"]),
+                    "finger": float(position["finger"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Ignoring invalid waypoint %s in %s", name, WAYPOINT_FILE)
+
+    return waypoints
+
+
+def save_waypoints(waypoints, logger):
+    """Save Cartesian controller waypoints to JSON."""
+    try:
+        with WAYPOINT_FILE.open("w") as f:
+            json.dump(waypoints, f, indent=4)
+            f.write("\n")
+    except OSError as exc:
+        logger.warning("Could not save %s: %s", WAYPOINT_FILE, exc)
+
+
+def handle_waypoint_button(button, state, logger):
+    """Store or recall a Cartesian waypoint from a face-button press."""
+    name = WAYPOINT_BUTTONS.get(button)
+    if name is None:
+        return False
+
+    if state["programming_mode"]:
+        state["waypoints"][name] = waypoint_position(
+            state["x"],
+            state["y"],
+            state["z"],
+            state["finger"],
+        )
+        save_waypoints(state["waypoints"], logger)
+        state["status"] = f"Saved {name} waypoint"
+        logger.info(state["status"])
+        return True
+
+    position = state["waypoints"].get(name)
+    if position is None:
+        state["status"] = f"No {name} waypoint saved"
+        logger.info(state["status"])
+        return True
+
+    state["x"] = position["x"]
+    state["y"] = position["y"]
+    state["z"] = position["z"]
+    state["finger"] = position["finger"]
+    state["status"] = f"Loaded {name} waypoint"
+    logger.info(state["status"])
+    return True
+
+
+def check_cartesian_keys(x, y, z, finger, logger):
+    """Poll keyboard for Cartesian inverse-kinematics control."""
     keys = pygame.key.get_pressed()
-    if   keys[pygame.K_UP]: ## Moves meArm FORWARD when "up arrow" key is pressed
-        y = y + STEP
-        logger.debug("Up")
-    elif keys[pygame.K_DOWN]: ## Moves meArm BACKWARD when "down arrow" key is pressed
-        y = y - STEP
-        logger.debug("Down")
-    elif keys[pygame.K_RIGHT]: ## Moves meArm RIGHT when "right arrow" key is pressed
-        x = x + STEP
-        logger.debug("Right")
-    elif keys[pygame.K_LEFT]: ## Moves meArm LEFT when "left arrow" key is pressed
-        x = x - STEP
-        logger.debug("Left")
-    elif keys[pygame.K_w]: ## Moves meArm UP when "w" key is pressed
-        z = z + STEP
-        logger.debug("w")
-    elif keys[pygame.K_s]: ## Moves meArm DOWN when "s" key is pressed
-        z = z - STEP
-        logger.debug("s")
-    elif keys[pygame.K_o]: ## FULLY opens gripper
-        finger = 100.
-        logger.debug("o")
-    elif keys[pygame.K_l]: ## FULLY closes gripper
-        finger = 0.
-        logger.debug("l")
-    elif keys[pygame.K_p]: ## PARTIALLY opens gripper, to  50%
-        finger = 50.
-        logger.debug("p")
-    elif keys[pygame.K_q]: ## PARTIALLY opens grippeer
-        finger = finger + STEP
-        logger.debug("q")
-    elif keys[pygame.K_a]: ## PARTIALLY closes gripper
-        finger = finger - STEP
-        logger.debug("a")
-    else:
-        pass
+    if keys[pygame.K_RIGHT]:
+        x += CARTESIAN_STEP
+        logger.debug("X increase")
+    elif keys[pygame.K_LEFT]:
+        x -= CARTESIAN_STEP
+        logger.debug("X decrease")
+    elif keys[pygame.K_UP]:
+        y += CARTESIAN_STEP
+        logger.debug("Y increase")
+    elif keys[pygame.K_DOWN]:
+        y -= CARTESIAN_STEP
+        logger.debug("Y decrease")
+    elif keys[pygame.K_w]:
+        z += CARTESIAN_STEP
+        logger.debug("Z increase")
+    elif keys[pygame.K_s]:
+        z -= CARTESIAN_STEP
+        logger.debug("Z decrease")
+    elif keys[pygame.K_o]:
+        finger = 100.0
+        logger.debug("Gripper open")
+    elif keys[pygame.K_l]:
+        finger = 0.0
+        logger.debug("Gripper close")
+    elif keys[pygame.K_p]:
+        finger = 50.0
+        logger.debug("Gripper half-open")
+    elif keys[pygame.K_q]:
+        finger += GRIPPER_STEP
+        logger.debug("Gripper increase")
+    elif keys[pygame.K_a]:
+        finger -= GRIPPER_STEP
+        logger.debug("Gripper decrease")
 
-    return x,y,z,finger
+    return x, y, z, finger
 
-def checkJoyAxis(joystick, x,y,z,finger,logger):
-    '''Handle joystick position'''
+
+def check_cartesian_joy_axis(joystick, x, y, z, finger, logger):
+    """Handle Cartesian input from joystick axes."""
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     joy = False
-    if axes[0] > JOYTHRESH or axes[0] < -JOYTHRESH:
-        x += axes[0]*STEP
+
+    x_axis = axis_value(axes, 0)
+    y_axis = axis_value(axes, 1)
+    z_axis = axis_value(axes, 4)
+    left_trigger = axis_value(axes, 2, -1.0)
+    right_trigger = axis_value(axes, 5, -1.0)
+
+    if abs(x_axis) > JOYTHRESH:
+        x += x_axis * CARTESIAN_STEP
         joy = True
-    if axes[1] > JOYTHRESH or axes[1] < -JOYTHRESH:
-        y -= axes[1]*STEP
+    if abs(y_axis) > JOYTHRESH:
+        y -= y_axis * CARTESIAN_STEP
         joy = True
-    if axes[4] > JOYTHRESH or axes[4] < -JOYTHRESH:
-        z -= axes[4]*STEP
+    if abs(z_axis) > JOYTHRESH:
+        z -= z_axis * CARTESIAN_STEP
         joy = True
-    if (axes[2] > -1.0) or (axes[5] > -1.0):
-        gr = (axes[2]+1)/2 - (axes[5]+1)/2
-        finger +=gr*STEP
+    if left_trigger > -1.0 or right_trigger > -1.0:
+        finger += ((left_trigger + 1.0) / 2.0 - (right_trigger + 1.0) / 2.0) * GRIPPER_STEP
         joy = True
-    
+
     if joy:
-        logger.debug(f"Joystick x:{x:.0f} y:{y:.0f} z:{z:.0f} gripper:{finger:.0f}")
-    
-    return x,y,z,finger
+        logger.debug("Joystick x:%.0f y:%.0f z:%.0f gripper:%.0f", x, y, z, finger)
+
+    return x, y, z, finger
 
 
-def on_joyhat(button,x,y,z,finger,logger):
-    """
-    Top left rocker switch
-    Forward, Backward, Left and Right Buttons
-    """
-    if   button == ( 0, 1): # Forward
-        y = y + 20.
-    elif button == ( 0,-1): # Backward
-        y = y - 20.
-    elif button == ( 1, 0): # Right
-        x = x + 20.
-    elif button == (-1, 0): # Left
-        x = x - 20.
+def check_cartesian_joy_hat(joystick, x, y, z, finger, logger):
+    """Handle Cartesian X/Y input from the joystick D-pad/hat."""
+    if joystick.get_numhats() < 1:
+        return x, y, z, finger
+
+    hat_x, hat_y = joystick.get_hat(0)
+    if hat_x > 0:
+        x += CARTESIAN_STEP
+        logger.debug("Joystick hat X increase")
+    elif hat_x < 0:
+        x -= CARTESIAN_STEP
+        logger.debug("Joystick hat X decrease")
+
+    if hat_y > 0:
+        y += CARTESIAN_STEP
+        logger.debug("Joystick hat Y increase")
+    elif hat_y < 0:
+        y -= CARTESIAN_STEP
+        logger.debug("Joystick hat Y decrease")
+
+    return x, y, z, finger
+
+
+def handle_cartesian_button(button, state, logger):
+    """Handle gamepad button functions for Cartesian control."""
+    if button in PROGRAM_BUTTONS:
+        state["programming_mode"] = True
+        state["status"] = "Programming: press waypoint button to save"
+        return True
+    if button in RUN_BUTTONS:
+        state["programming_mode"] = False
+        state["status"] = "Run mode: press waypoint button to move"
+        return True
+    if button in OPEN_BUTTONS:
+        state["finger"] = 100.0
+        state["status"] = "Gripper open"
+        return True
+    if button in CLOSE_BUTTONS:
+        state["finger"] = 0.0
+        state["status"] = "Gripper closed"
+        return True
+    if button in HOME_BUTTONS:
+        state["x"] = 0.0
+        state["y"] = 150.0
+        state["z"] = 100.0
+        state["status"] = "Home waypoint loaded"
+        return True
+
+    return handle_waypoint_button(button, state, logger)
+
+
+def create_state(arm, logger):
+    """Build mutable Cartesian-controller state."""
+    x, y, z = arm.get_position()
+    return {
+        "arm": arm,
+        "x": x,
+        "y": y,
+        "z": z,
+        "finger": arm.get_finger(),
+        "waypoints": load_waypoints(logger),
+        "programming_mode": False,
+        "status": "Run mode: press waypoint button to move",
+    }
+
+
+def shutdown_hardware(state):
+    """Release servo PWM outputs when the controller exits."""
+    arm = state.get("arm")
+    if arm is not None:
+        arm.deinit()
+        state["arm"] = None
+
+
+def service_cartesian_mode(state, joystick, joy, current_time, check_userinput_time, motor_time, logger):
+    """Poll and service Cartesian inverse-kinematics controls."""
+    changed = False
+    if (current_time - check_userinput_time) > INTERVAL_USERINPUT:
+        state["x"], state["y"], state["z"], state["finger"] = check_cartesian_keys(
+            state["x"],
+            state["y"],
+            state["z"],
+            state["finger"],
+            logger,
+        )
+        if joy:
+            state["x"], state["y"], state["z"], state["finger"] = check_cartesian_joy_axis(
+                joystick,
+                state["x"],
+                state["y"],
+                state["z"],
+                state["finger"],
+                logger,
+            )
+            state["x"], state["y"], state["z"], state["finger"] = check_cartesian_joy_hat(
+                joystick,
+                state["x"],
+                state["y"],
+                state["z"],
+                state["finger"],
+                logger,
+            )
+        check_userinput_time = current_time
+
+    arm = state["arm"]
+    if arm is not None and (current_time - motor_time) > INTERVAL_MOTOR:
+        if (state["x"], state["y"], state["z"]) != arm.get_position():
+            current = arm.get_position()
+            requested = (state["x"], state["y"], state["z"])
+            preview = arm.preview_move_to(*requested)
+            if preview is None:
+                state["status"] = "Requested Cartesian position is out of IK range"
+                state["x"], state["y"], state["z"] = current
+            elif boundary_guard_blocks_move(current, requested, preview):
+                state["status"] = "Boundary reached; holding actual pose"
+                state["x"], state["y"], state["z"] = current
+            elif arm.move_to(*requested):
+                actual = arm.get_position()
+                if cartesian_distance(requested, actual) > 1.0:
+                    state["status"] = "Moved to nearest pose allowed by joint/servo limits"
+                else:
+                    state["status"] = "Moved to requested Cartesian position"
+                state["x"], state["y"], state["z"] = actual
+            else:
+                state["status"] = "Requested Cartesian position is out of IK range"
+                state["x"], state["y"], state["z"] = current
+            changed = True
+
+        if state["finger"] != arm.get_finger():
+            arm.partial_grip(state["finger"])
+            state["finger"] = arm.get_finger()
+            changed = True
+
+        motor_time = current_time
+
+    return check_userinput_time, motor_time, changed
+
+
+def update_text(state, screen, font, font_small):
+    """Render the Cartesian-controller state."""
+    programming_mode = state["programming_mode"]
+    blink_on = int(time.time() / INTERVAL_BLINK) % 2 == 0
+
+    screen.fill((255, 255, 255))
+    title = font.render("Mode: CARTESIAN IK", True, (0, 0, 0))
+    status = font_small.render(state["status"], True, (0, 0, 0))
+    screen.blit(title, (10, 10))
+    screen.blit(status, (10, 42))
+
+    mode_color = (0, 90, 190)
+    pygame.draw.circle(screen, mode_color, (500, 24), 10)
+    pygame.draw.circle(screen, (0, 0, 0), (500, 24), 10, 2)
+
+    if programming_mode:
+        led_color = (220, 0, 0) if blink_on else (255, 255, 255)
+        led_outline = (220, 0, 0)
     else:
-        pass
+        led_color = (180, 180, 180)
+        led_outline = (120, 120, 120)
+    pygame.draw.circle(screen, led_color, (500, 50), 8)
+    pygame.draw.circle(screen, led_outline, (500, 50), 8, 2)
 
-    logger.debug(f"Hat: x:{x:.0f} y:{y:.0f} z:{z:.0f} gripper:{finger:.0f}")
-    return x,y,z,finger
+    cartesian_1 = font_small.render(
+        f"Cartesian x/y/z: {state['x']:.0f} / {state['y']:.0f} / {state['z']:.0f} mm",
+        True,
+        (0, 0, 0),
+    )
+    cartesian_2 = font_small.render(f"Gripper open: {state['finger']:.0f}%", True, (0, 0, 0))
+    screen.blit(cartesian_1, (10, 80))
+    screen.blit(cartesian_2, (10, 102))
 
-def on_joybutton(button,x,y,z,finger,logger):
-    '''Handle joystick button events '''
-    reverse_attack_time = 0.
-    reverse_defense_time =0.
-    if     button == 0: # cross, defense
-        x = 0. 
-        y = 85.  
-        z = 30.
-        logger.debug("defense")
-    elif   button == 1: # ring, attack right
-        x += 75.
-        y = 200.
-        logger.debug("attack right")
-    elif   button == 2: # triangle attack middle
-        y = 200.
-        logger.debug("attack middle")
-    elif   button == 3: # square: attack forward left
-        x -= 75.
-        y = 200.
-        logger.debug("attack left")
-    elif   button == 4: # left front top
-        finger = 100.
-        logger.debug("open gripper")
-    elif   button == 5: # right front top
-        finger = 0.
-        logger.debug("close gripper")
-    elif   button == 6: # left front bottom
-        pass # is coupled to axis
-    elif   button == 7: # right front bottom
-        pass # is coupled to axis
-    elif   button == 8: # top front left: attack
-        y += 40.
-        reverse_attack_time = time.time() + 0.2
-        logger.debug(f"attack sequence: {reverse_attack_time:.0f}")
-    elif   button == 9: # top fropnt right: defense
-        y -= 40.
-        reverse_defense_time = time.time() + 0.5
-        logger.debug(f"defense sequence: {reverse_defense_time:.0f}")
-    elif  button == 10: # home
-        x = 0.   ## original x
-        y = 125. ## original y
-        z = 75.  ## original z
-        logger.debug("home")
-    else:
-        logger.debug(f"Unassigned Button: {button}")
+    help_lines = [
+        "Cartesian keys: arrows X/Y, W/S Z, O/L/P/Q/A gripper",
+        "Joystick:       axis 0/1/4 X/Y/Z, triggers gripper, D-pad X/Y",
+        "Waypoints:      Square/X/Circle/Triangle use direct move_to commands",
+        "Program/run:    left center saves waypoint, right center returns to run",
+        "Home:           home button returns to x=0, y=150, z=100",
+        "Limits:         displayed pose is the actual pose after IK, joint, and servo clamps",
+    ]
+    for index, line in enumerate(help_lines):
+        rendered = font_small.render(line, True, (0, 0, 0))
+        screen.blit(rendered, (10, 150 + index * 24))
 
-    return x,y,z,finger, reverse_attack_time, reverse_defense_time
-
-def updateText(x,y,z,finger,screen, font, font_small):
-    '''Report system status in game window'''
-    
-    text0 = font.render(f"X: {x:.0f}", True, (0, 0, 0))
-    text1 = font.render(f"Y: {y:.0f}", True, (0, 0, 0))
-    text2 = font.render(f"Z: {z:.0f}", True, (0, 0, 0))
-    text3 = font.render(f"Gripper: {finger:.0f}", True, (0, 0, 0))
-
-    help_1 = font_small.render("Keyboard: Arrows/w-s: to move", True, (0, 0, 0))
-    help_2 = font_small.render("Keyboard: o/l/p/q/a for gripper", True, (0, 0, 0))
-    help_3 = font_small.render("Joystick Left: u/d/r/l: Forward/Backward/Right/Left", True, (0, 0, 0))
-    help_4 = font_small.render("Joystick Right: u/d: Up/Down", True, (0, 0, 0))
-    help_5 = font_small.render("Joybutton: Cross: defense, O/Tri/Square: attack right, middle, left", True, (0, 0, 0))
-    help_6 = font_small.render("Joybutton Front: Left/Right: gripper Open/Close", True, (0, 0, 0))
-    help_7 = font_small.render("Joybutton Top Middle: Left/Right: Attack/Defend", True, (0, 0, 0))
-    help_8 = font_small.render("Joyhat: Left/Right/Up/Down: Left/Right/Forward/Backward", True, (0, 0, 0))
-    
-    # Blit text to screen
-    screen.fill((255, 255, 255)) 
-    screen.blit(text0,  (10, 10))
-    screen.blit(text1,  (10, 40))
-    screen.blit(text2, (10, 70))
-    screen.blit(text3, (10, 100))
-
-    screen.blit(help_1, (10, 130))
-    screen.blit(help_2, (10, 150))
-    screen.blit(help_3, (10, 170))
-    screen.blit(help_4, (10, 190))
-    screen.blit(help_5, (10, 210))
-    screen.blit(help_6, (10, 230))
-    screen.blit(help_7, (10, 250))
-    screen.blit(help_8, (10, 270))
     pygame.display.flip()
 
 
@@ -219,111 +466,73 @@ def updateText(x,y,z,finger,screen, font, font_small):
 # Main
 ##############################################################################################################################
 
-def main():
 
+def main():
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
-    # - meArm initialize ----------------------------------
-    arm = meArm.meArm(address=0x6F, logger=logger) # create the driver
-
-    # apply start values
-    x,y,z = arm.get_position()
-    finger = arm.get_finger()
-
-    # - Py Game -------------------------------
     pygame.init()
     pygame.joystick.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
-    pygame.display.set_caption("meArm Controller")
+    pygame.display.set_caption("meArm Cartesian Controller 2026")
     clock = pygame.time.Clock()
-    font=pygame.font.SysFont(None, 36)
-    font_small=pygame.font.SysFont(None, 16)
+    font = pygame.font.SysFont(None, 32)
+    font_small = pygame.font.SysFont(None, 20)
 
     try:
-        # Initialize the first joystick
         joystick = pygame.joystick.Joystick(0)
         joystick.init()
-        logger.info("Controller detected: ", joystick.get_name())
+        logger.info("Controller detected: %s", joystick.get_name())
         joy = True
     except pygame.error:
         logger.warning("No controller detected.")
+        joystick = None
         joy = False
 
-    # - Loop -----------------------------------
-    motor_time      = time.time() # joystick command
-    check_userinput_time = time.time() # keyboard command
-    reverse_attack_time = 0
-    reverse_defense_time = 0
+    arm = meArm.meArm(address=HAT_ADDRESS, logger=logger)
+    state = create_state(arm, logger)
 
-    updateText(x,y,z,finger,screen,font,font_small)
-    
+    current_time = time.time()
+    motor_time = current_time
+    check_userinput_time = current_time
+    blink_time = current_time
+    update_text(state, screen, font, font_small)
+
     running = True
-    while running:
-        current_time = time.time()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                # Exit when window is closed
-                running = False
+    try:
+        while running:
+            current_time = time.time()
+            redraw = False
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.JOYBUTTONDOWN:
+                    if handle_cartesian_button(event.button, state, logger):
+                        redraw = True
 
-            # - Game Pad Buttons -------------------
-            elif event.type == pygame.JOYBUTTONDOWN:
-                # Handle each button press
-                logger.debug("Button pressed: ", event.button)
-                (x, y, z, finger, reverse_attack_time, reverse_defense_time) = (
-                    on_joybutton(event.button,x,y,z,finger,logger)
-                )
+            check_userinput_time, motor_time, changed = service_cartesian_mode(
+                state,
+                joystick,
+                joy,
+                current_time,
+                check_userinput_time,
+                motor_time,
+                logger,
+            )
+            redraw = redraw or changed
 
-            # - Game Pad Hat Buttons ---------------
-            elif event.type == pygame.JOYHATMOTION:
-                x, y, z, finger = on_joyhat(event.value,x,y,z,finger,logger)
-                logger.debug("Hat pressed: ", event.value)
-                    
-            else:
-                pass
-                logger.debug("Unknown event:", event)
+            if state["programming_mode"] and (current_time - blink_time) > INTERVAL_BLINK:
+                redraw = True
+                blink_time = current_time
 
-        if (current_time - check_userinput_time) > INTERVAL_USERINPUT:
-            # - Keyboard Keys ----------------------
-            x,y,z,finger = checkKeys(x,y,z,finger,logger)
-            # - Game Pad Joysticks -----------------
-            if joy:
-                x, y, z, finger = checkJoyAxis(joystick, x,y,z,finger,logger)
-            check_userinput_time = current_time
+            if redraw:
+                update_text(state, screen, font, font_small)
 
-        if (current_time - motor_time) > INTERVAL_MOTOR:
-            # Move arm if we have new position
-            if (x, y, z) != arm.get_position():
-                arm.move_to(x, y, z)
-                x, y, z = arm.get_position()
-                updateText(x,y,z,finger,screen,font,font_small)
-                
-            # Adjust gripper if we have new location
-            if finger != arm.get_finger():
-                arm.partial_grip(finger)
-                finger = arm.get_finger()
-                updateText(x,y,z,finger,screen,font,font_small)
-
-            motor_time = current_time
+            clock.tick(120)
+    finally:
+        shutdown_hardware(state)
+        pygame.quit()
 
 
-        # Deal with timed movement sequences
-        
-        #   attack move
-        if (reverse_attack_time < current_time) and (reverse_attack_time != 0.):
-            y = y - 40.
-            reverse_attack_time = 0.
-            updateText(x,y,z,finger,screen, font, font_small)
-
-        #   defense move
-        if (reverse_defense_time < current_time) and (reverse_defense_time != 0.):
-            y = y + 40.
-            reverse_defense_time = 0.
-            updateText(x,y,z,finger,screen, font, font_small)
-
-        clock.tick(60)
-    
-    pygame.quit()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
