@@ -84,48 +84,108 @@ Important distinction:
 
 ## Installation
 
-Clone the repository and install the Python dependencies you need for the tools you plan to use.
+These steps assume a fresh Raspberry Pi OS image with network access and a
+terminal open on the Pi.
 
-Python dependencies:
+### System Packages
 
-- `pygame`
-- `adafruit-circuitpython-pca9685`
-- `adafruit-circuitpython-motor`
-- `adafruit-circuitpython-motorkit`
-
-Example:
+Update the package index and install the base tools, I2C utilities, Python
+virtual environment support, and pygame:
 
 ```bash
-python3 -m pip install pygame \
+sudo apt update
+sudo apt install -y \
+    git \
+    i2c-tools \
+    python3-dev \
+    python3-pip \
+    python3-smbus \
+    python3-venv \
+    python3-pygame
+```
+
+`python3-pygame` is installed from Raspberry Pi OS packages so the keyboard and
+gamepad controllers have the SDL support they need.
+
+### Enable I2C
+
+Enable the Raspberry Pi I2C interface:
+
+```bash
+sudo raspi-config nonint do_i2c 0
+```
+
+Make sure your user can access I2C devices, then reboot or log out and back in:
+
+```bash
+sudo usermod -aG i2c $USER
+sudo reboot
+```
+
+After reboot, check that the PCA9685 or Motor HAT appears on the I2C bus:
+
+```bash
+i2cdetect -y 1
+```
+
+Common addresses are `0x40` for many PCA9685 boards and Motor HATs, but the
+actual address depends on your board jumpers.
+
+### Clone This Repository
+
+```bash
+git clone https://github.com/uutzinger/meArmPi.git
+cd meArmPi
+```
+
+### Python Environment
+
+Create a virtual environment that can also see the OS-installed `pygame`
+package:
+
+```bash
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
+Install the Adafruit CircuitPython hardware libraries:
+
+```bash
+python -m pip install \
+    adafruit-blinka \
     adafruit-circuitpython-pca9685 \
     adafruit-circuitpython-motor \
     adafruit-circuitpython-motorkit
 ```
 
-Raspberry Pi prerequisites:
+The project uses these Python dependencies:
 
-- enable I2C on the Raspberry Pi
-- make sure the user running the scripts has permission to access I2C devices
-- install system support packages if your image does not already provide them
+- `pygame` for keyboard and gamepad input
+- `board` from `adafruit-blinka` for Raspberry Pi pin and I2C access
+- `adafruit-circuitpython-pca9685` for the servo PWM controller
+- `adafruit-circuitpython-motor` for servo and stepper helpers
+- `adafruit-circuitpython-motorkit` for Adafruit Motor HAT stepper control
 
-Typical system packages on Raspberry Pi OS:
-
-- `python3-pip`
-- `python3-dev`
-- `python3-smbus`
-- `i2c-tools`
-
-Example:
+Activate the environment before running the tools in a new terminal:
 
 ```bash
-sudo apt update
-sudo apt install -y python3-pip python3-dev python3-smbus i2c-tools
+cd ~/meArmPi
+source .venv/bin/activate
 ```
 
-To verify the board is visible on I2C:
+### Verify the Install
+
+With the virtual environment active, verify the imports:
 
 ```bash
-i2cdetect -y 1
+python -c "import board, pygame; from adafruit_pca9685 import PCA9685; from adafruit_motor import servo, stepper; from adafruit_motorkit import MotorKit; print('meArmPi dependencies OK')"
+```
+
+Then run the calibration tool before normal arm control:
+
+```bash
+python Zero.py
 ```
 
 ## Core Library Usage
