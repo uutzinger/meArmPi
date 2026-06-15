@@ -160,7 +160,7 @@ class meArm:
         # Combined servo/stepper controllers disable this during mode switches
         # so reinitializing the servo driver does not unexpectedly move the arm.
         if home_on_start:
-            self.open_gripper()
+            self.close_gripper()
             self.move_to(0.0, 150.0, 100.0)
 
     def _load_config(self) -> None:
