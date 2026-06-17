@@ -350,10 +350,10 @@ def check_cartesian_joy_axis(joystick, x, y, z, finger, logger):
     right_trigger = axis_value(axes, 5, -1.0)
 
     if abs(x_axis) > JOYTHRESH:
-        x += x_axis * CARTESIAN_STEP
+        x -= x_axis * CARTESIAN_STEP
         joy = True
     if abs(y_axis) > JOYTHRESH:
-        y -= y_axis * CARTESIAN_STEP
+        y += y_axis * CARTESIAN_STEP
         joy = True
     if abs(z_axis) > JOYTHRESH:
         z -= z_axis * CARTESIAN_STEP
@@ -375,18 +375,18 @@ def check_cartesian_joy_hat(joystick, x, y, z, finger, logger):
 
     hat_x, hat_y = joystick.get_hat(0)
     if hat_x > 0:
-        x += CARTESIAN_STEP
-        logger.debug("Joystick hat X increase")
-    elif hat_x < 0:
         x -= CARTESIAN_STEP
         logger.debug("Joystick hat X decrease")
+    elif hat_x < 0:
+        x += CARTESIAN_STEP
+        logger.debug("Joystick hat X increase")
 
     if hat_y > 0:
-        y += CARTESIAN_STEP
-        logger.debug("Joystick hat Y increase")
-    elif hat_y < 0:
         y -= CARTESIAN_STEP
         logger.debug("Joystick hat Y decrease")
+    elif hat_y < 0:
+        y += CARTESIAN_STEP
+        logger.debug("Joystick hat Y increase")
 
     return x, y, z, finger
 
